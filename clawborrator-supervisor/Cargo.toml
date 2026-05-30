@@ -1,0 +1,53 @@
+[package]
+name        = "shadows-desktop"
+version     = "0.1.0"
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+description = "shadows-desktop: register your machine with a clawborrator hub by pairing through the shadows app (Google/Zoho). Fork of desktop_v1."
+
+[[bin]]
+name = "shadows-desktop"
+path = "src/main.rs"
+
+[dependencies]
+tokio              = { workspace = true }
+tokio-tungstenite  = { workspace = true }
+futures-util       = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap               = { workspace = true }
+hostname           = { workspace = true }
+dirs               = { workspace = true }
+url                = { workspace = true }
+uuid               = { workspace = true }
+reqwest            = { workspace = true }
+webbrowser         = { workspace = true }
+sha2               = { workspace = true }
+base64             = { workspace = true }
+rand               = { workspace = true }
+portable-pty       = { workspace = true }
+vt100              = { workspace = true }
+chrono             = { workspace = true }
+tracing-appender   = { workspace = true }
+whoami             = { workspace = true }
+interprocess       = { workspace = true }
+crossterm          = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys        = { workspace = true }
+
+# Tray UI — shared by the Windows and macOS daemon paths. Linux stays
+# headless (systemd-user service, no GUI session guarantee).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon          = { workspace = true }
+image              = { workspace = true }
+
+# macOS needs an NSApplication to host the menu-bar status item.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2              = { workspace = true }
+objc2-app-kit      = { workspace = true }
+objc2-foundation   = { workspace = true }
