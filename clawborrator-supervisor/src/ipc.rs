@@ -86,19 +86,24 @@ enum Response {
 /// The per-user IPC endpoint. Unix: a socket file under
 /// `~/.clawborrator/` (same dir as the config, easy to find/clean).
 /// Windows: a named pipe in the namespaced namespace.
+///
+/// DISTINCT from desktop_v1's socket (`daemon.sock` /
+/// `clawborrator-supervisor-daemon.sock`) so a shadows-desktop daemon and
+/// an upstream desktop_v1 daemon can run side by side on one machine
+/// without their CLIs (sessions/attach/new/end) crossing wires.
 fn ipc_name() -> Result<Name<'static>> {
     #[cfg(unix)]
     {
         let path = dirs::home_dir()
             .ok_or_else(|| anyhow!("could not resolve home dir"))?
             .join(".clawborrator")
-            .join("daemon.sock");
+            .join("shadows-desktop-daemon.sock");
         path.to_fs_name::<GenericFilePath>()
             .map_err(|e| anyhow!("building socket name: {e}"))
     }
     #[cfg(windows)]
     {
-        "clawborrator-supervisor-daemon.sock"
+        "shadows-desktop-daemon.sock"
             .to_ns_name::<GenericNamespaced>()
             .map_err(|e| anyhow!("building pipe name: {e}"))
     }

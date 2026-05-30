@@ -546,8 +546,11 @@ fn write_persisted_session(
 /// scratch_dir is held by the manager for cleanup on destroy; mcp_path
 /// is passed to `spawn_cc` as `--mcp-config <path>`.
 async fn prepare_mcp_config(hub_url: &str, channel_token: &str) -> Result<(PathBuf, PathBuf)> {
+    // `shadows-sessions` (not `sessions`) so the scratch root is disjoint
+    // from a co-running desktop_v1 daemon's; otherwise each daemon's
+    // startup orphan-sweep would delete the OTHER's session scratch dirs.
     let scratch_dir = match dirs::home_dir() {
-        Some(h) => h.join(".clawborrator").join("sessions").join(uuid::Uuid::new_v4().to_string()),
+        Some(h) => h.join(".clawborrator").join("shadows-sessions").join(uuid::Uuid::new_v4().to_string()),
         None    => bail!("could not resolve home dir"),
     };
     let ws_url = hub_ws_url(hub_url);
@@ -768,8 +771,9 @@ pub async fn respawn_preserving_id_session(
 /// live session has a fresh scratch dir in mgr, so anything else is
 /// orphan from a prior daemon run.
 pub fn sweep_orphan_scratch_dirs(mgr: &SessionManager) {
+    // Sweep only OUR scratch root (shadows-sessions), never desktop_v1's.
     let base = match dirs::home_dir() {
-        Some(h) => h.join(".clawborrator").join("sessions"),
+        Some(h) => h.join(".clawborrator").join("shadows-sessions"),
         None    => { warn!("no home dir; skipping orphan scratch sweep"); return; }
     };
     if !base.exists() { return; }
