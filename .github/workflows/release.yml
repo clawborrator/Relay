@@ -1,0 +1,92 @@
+# Build the shadows-desktop binary for macOS / Windows / Linux and
+# publish them to a GitHub Release.
+#
+# Trigger:
+#   - push a tag matching `v*` (e.g. `v0.1.0`) -> build all three +
+#     create/update the Release for that tag and upload the binaries.
+#   - workflow_dispatch from a branch -> build all three as a smoke test,
+#     but DON'T publish (the release job is gated on a tag ref).
+#
+# Asset names:
+#   shadows-desktop-macos-arm64
+#   shadows-desktop-windows-x64.exe
+#   shadows-desktop-linux-x64
+#
+# Native builds (no cross-compilation): the runner arch matches the
+# target. Linux is glibc (ubuntu-22.04); switch to musl later if a fully
+# static binary for older glibc is needed.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: shadows-desktop
+            asset: shadows-desktop-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: shadows-desktop.exe
+            asset: shadows-desktop-windows-x64.exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bin: shadows-desktop
+            asset: shadows-desktop-linux-x64
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p shadows-desktop
+
+      - name: stage asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish for an actual tag push — a workflow_dispatch run from a
+    # branch just exercises the build matrix without cutting a release.
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

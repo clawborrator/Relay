@@ -1,0 +1,25 @@
+# Lightweight CI: build + check the crate on every push to main and on
+# PRs. Keeps the matrix to Linux for speed; the release workflow's
+# workflow_dispatch builds all three platforms when you want a full
+# cross-platform smoke test.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: cargo check + build (linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: check
+        run: cargo check --locked --all-targets
+      - name: build
+        run: cargo build --locked -p shadows-desktop
