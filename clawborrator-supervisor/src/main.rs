@@ -36,6 +36,7 @@ mod spawn;
 mod status;
 mod token_usage;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
+#[cfg(target_os = "windows")] mod gui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,6 +115,13 @@ pub(crate) struct Cli {
     /// config file at `~/.clawborrator/desktop_v1.json`).
     #[arg(long, env = "CLAWBORRATOR_MACHINE_ID")]
     machine_id: Option<String>,
+
+    /// Internal: set on the installed Task-Scheduler entry so the daemon
+    /// runs headless (tray only) and never opens the first-run setup
+    /// window. A bare interactive launch (no flag) shows the wizard when
+    /// this machine isn't paired yet.
+    #[arg(long, hide = true)]
+    background: bool,
 
     /// No subcommand = run the daemon (default). Subcommands manage
     /// the platform's autostart entry so the daemon launches at
@@ -257,7 +265,7 @@ pub(crate) fn load_or_init_config() -> Result<Config> {
     Ok(cfg)
 }
 
-fn save_config(cfg: &Config) -> Result<()> {
+pub(crate) fn save_config(cfg: &Config) -> Result<()> {
     let path = config_path()?;
     let json = serde_json::to_string_pretty(cfg)?;
     std::fs::write(&path, json).with_context(|| format!("writing {path:?}"))?;
@@ -1141,6 +1149,24 @@ fn matches_flag(flag: &str, target: &str) -> bool {
     flag == target || flag.starts_with(&format!("{target}="))
 }
 
+/// True if this machine is already paired (a token is available from the
+/// --pat flag / CLAWBORRATOR_PAT env, both folded into cli.pat by clap,
+/// or cached in the config). Drives whether the first-run wizard shows.
+#[cfg(target_os = "windows")]
+fn is_paired(cli: &Cli) -> bool {
+    cli.pat.is_some() || load_or_init_config().ok().and_then(|c| c.token).is_some()
+}
+
+/// Shadows app URL to pre-fill in the wizard: --shadows-url / env (both
+/// in cli.shadows_url) -> cached config -> built-in default.
+#[cfg(target_os = "windows")]
+fn default_shadows_url(cli: &Cli) -> String {
+    cli.shadows_url
+        .clone()
+        .or_else(|| load_or_init_config().ok().and_then(|c| c.shadows_url))
+        .unwrap_or_else(|| DEFAULT_SHADOWS_URL.to_string())
+}
+
 fn main() -> Result<()> {
     attach_parent_console_if_any();
 
@@ -1160,11 +1186,24 @@ fn main() -> Result<()> {
     let log = logging::init().context("initializing logging")?;
     info!(log_path = %log.log_path.display(), "logs will be written here");
 
-    // Windows + macOS: the tray owns the main thread (both the Win32
-    // message loop and the Cocoa NSApplication pump are thread-affine).
-    // The daemon future runs on a tokio worker started inside
-    // `tray::run_with_tray`.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Windows: an interactive launch (NOT the --background Task entry)
+    // with no cached token shows the first-run setup wizard, then exits.
+    // The wizard installs + starts the background Task, which re-launches
+    // the daemon with --background and goes straight to the tray.
+    #[cfg(target_os = "windows")]
+    {
+        if !cli.background && !is_paired(&cli) {
+            return gui::run_first_run_wizard(default_shadows_url(&cli));
+        }
+        // Tray owns the main thread (the Win32 message loop is
+        // thread-affine); the daemon future runs on a tokio worker
+        // started inside `tray::run_with_tray`.
+        tray::run_with_tray(cli, log.log_path.clone())
+    }
+
+    // macOS: the Cocoa NSApplication pump is thread-affine, so the tray
+    // owns the main thread here too. (No first-run GUI yet on macOS.)
+    #[cfg(target_os = "macos")]
     {
         tray::run_with_tray(cli, log.log_path.clone())
     }

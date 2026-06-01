@@ -16,6 +16,10 @@ use anyhow::Result;
 #[cfg(target_os = "macos")]   mod macos;
 #[cfg(target_os = "linux")]   mod linux;
 
+/// Start the installed autostart entry immediately (Windows only - used
+/// by the first-run setup wizard's "install + start" button).
+#[cfg(target_os = "windows")] pub use windows::run_now;
+
 #[derive(Debug)]
 pub enum AutostartStatus {
     /// Entry exists. `details` is a short OS-specific human description

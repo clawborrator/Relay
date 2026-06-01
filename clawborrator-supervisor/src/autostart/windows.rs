@@ -66,6 +66,18 @@ impl AutostartProvider for WindowsAutostart {
     fn facility_name(&self) -> &'static str { "Windows Task Scheduler" }
 }
 
+/// Start the installed task immediately (schtasks /Run), without waiting
+/// for the next logon. Used by the first-run wizard's "install + start"
+/// button so the tray daemon comes up right away. The Task runs the exe
+/// with `--background`, so it goes straight to the tray daemon and never
+/// re-opens the wizard.
+pub fn run_now() -> Result<()> {
+    let out = run_schtasks(&["/Run", "/TN", TASK_NAME])?;
+    require_success(&out, "schtasks /Run")?;
+    info!(task = TASK_NAME, "task started");
+    Ok(())
+}
+
 // ─── helpers ───────────────────────────────────────────────────────
 
 fn run_schtasks(args: &[&str]) -> Result<Output> {
@@ -166,6 +178,7 @@ fn render_task_xml(exe: &Path) -> Result<String> {
   <Actions Context="Author">
     <Exec>
       <Command>{exe_path_xml}</Command>
+      <Arguments>--background</Arguments>
       <WorkingDirectory>{exe_dir_xml}</WorkingDirectory>
     </Exec>
   </Actions>

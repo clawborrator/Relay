@@ -1,6 +1,6 @@
 [package]
 name        = "shadows-desktop"
-version     = "0.1.1"
+version     = "0.2.0"
 edition.workspace      = true
 license.workspace      = true
 rust-version.workspace = true
@@ -39,6 +39,9 @@ crossterm          = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys        = { workspace = true }
+# First-run setup wizard (src/gui.rs). Windows-only so non-Windows
+# builds stay headless and don't pull the GUI stack.
+eframe             = "0.28"
 
 # Tray UI — shared by the Windows and macOS daemon paths. Linux stays
 # headless (systemd-user service, no GUI session guarantee).
