@@ -4,10 +4,14 @@ version     = "0.2.0"
 edition.workspace      = true
 license.workspace      = true
 rust-version.workspace = true
-description = "shadows-desktop: register your machine with a clawborrator hub by pairing through the shadows app (Google/Zoho). Fork of desktop_v1."
+description = "Relay: register your machine with a clawborrator hub by pairing through the shadows app (Google/Zoho). Fork of desktop_v1."
+# build.rs embeds the Windows .exe icon (no-op on non-Windows hosts).
+build       = "build.rs"
 
+# The distributed binary is named `relay` (relay.exe on Windows). The
+# crate/package stays shadows-desktop to keep the fork diff small.
 [[bin]]
-name = "shadows-desktop"
+name = "relay"
 path = "src/main.rs"
 
 [dependencies]
@@ -39,15 +43,21 @@ crossterm          = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys        = { workspace = true }
-# First-run setup wizard (src/gui.rs). Windows-only so non-Windows
-# builds stay headless and don't pull the GUI stack.
-eframe             = "0.28"
 
-# Tray UI — shared by the Windows and macOS daemon paths. Linux stays
-# headless (systemd-user service, no GUI session guarantee).
+# Compiles the Relay icon (assets/app-icon.ico) into relay.exe so
+# Explorer / taskbar / Alt-Tab / the wizard window show the app icon.
+# Build-dependency only, and only on Windows hosts — see build.rs.
+[target.'cfg(windows)'.build-dependencies]
+winresource        = "0.1"
+
+# Tray UI + first-run setup wizard (src/gui.rs) — shared by the Windows
+# and macOS daemon paths. Linux stays headless (systemd-user service,
+# no GUI session guarantee), so it pulls neither the tray nor the egui
+# GUI stack.
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon          = { workspace = true }
 image              = { workspace = true }
+eframe             = "0.28"
 
 # macOS needs an NSApplication to host the menu-bar status item.
 [target.'cfg(target_os = "macos")'.dependencies]

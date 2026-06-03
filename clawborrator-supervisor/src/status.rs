@@ -32,7 +32,7 @@ impl TrayStatus {
         }
     }
     pub fn tooltip(&self) -> String {
-        format!("clawborrator-supervisor — {}", self.label())
+        format!("Relay — {}", self.label())
     }
 }
 

@@ -1,5 +1,5 @@
-# Build the shadows-desktop binary for macOS / Windows / Linux and
-# publish them to a GitHub Release.
+# Build the Relay binary (`relay` / `relay.exe`) for macOS / Windows /
+# Linux and publish them to a GitHub Release.
 #
 # Trigger:
 #   - push a tag matching `v*` (e.g. `v0.1.0`) -> build all three +
@@ -8,13 +8,20 @@
 #     but DON'T publish (the release job is gated on a tag ref).
 #
 # Asset names:
-#   shadows-desktop-macos-arm64
-#   shadows-desktop-windows-x64.exe
-#   shadows-desktop-linux-x64
+#   relay-macos-arm64                      (raw CLI binary)
+#   relay-macos-arm64.dmg                  (double-click Relay.app installer)
+#   relay-windows-x64.exe
+#   relay-linux-x64
 #
 # Native builds (no cross-compilation): the runner arch matches the
 # target. Linux is glibc (ubuntu-22.04); switch to musl later if a fully
 # static binary for older glibc is needed.
+#
+# macOS packaging: after the native build, the macOS job wraps the
+# binary in a proper .app bundle (icon + Info.plist) and a
+# drag-to-Applications .dmg via packaging/macos/*.sh. The .dmg ships
+# UNSIGNED unless Developer ID secrets are configured — see the
+# "sign + notarize" steps below and packaging/macos/README.md.
 
 name: release
 
@@ -28,22 +35,34 @@ jobs:
   build:
     name: build ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
+    # Surface the optional macOS-signing secrets as job-level env so the
+    # per-step `if:` guards can test for their presence (a step's own
+    # `env:` block is NOT visible to that step's `if`). Empty on Windows/
+    # Linux and whenever the secrets are unset — the signing/notarization
+    # steps then skip and the .dmg ships unsigned.
+    env:
+      MACOS_CERT_P12:        ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD:   ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY:   ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      MACOS_NOTARY_TEAM_ID:  ${{ secrets.MACOS_NOTARY_TEAM_ID }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            bin: shadows-desktop
-            asset: shadows-desktop-macos-arm64
+            bin: relay
+            asset: relay-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: shadows-desktop.exe
-            asset: shadows-desktop-windows-x64.exe
+            bin: relay.exe
+            asset: relay-windows-x64.exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            bin: shadows-desktop
-            asset: shadows-desktop-linux-x64
+            bin: relay
+            asset: relay-linux-x64
     steps:
       - uses: actions/checkout@v6
 
@@ -68,6 +87,79 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+      # ─── macOS: wrap the binary in a .app and a drag-to-Applications .dmg ───
+      - name: build .app bundle
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          packaging/macos/make-app.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
+            "$VERSION" \
+            "dist/Relay.app"
+
+      # Developer ID signing — runs ONLY when the cert secrets exist, so
+      # the pipeline works unsigned out of the box and "upgrades" the day
+      # you add an Apple Developer account. To enable, set repo secrets:
+      #   MACOS_CERT_P12        base64 of your "Developer ID Application" .p12
+      #   MACOS_CERT_PASSWORD   the .p12 export password
+      #   MACOS_SIGN_IDENTITY   e.g. "Developer ID Application: Name (TEAMID)"
+      # See packaging/macos/README.md for the full walkthrough.
+      - name: sign .app (Developer ID)
+        if: matrix.os == 'macos-latest' && env.MACOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # --options runtime (Hardened Runtime) is required for notarization.
+          codesign --force --deep --timestamp --options runtime \
+            --sign "$MACOS_SIGN_IDENTITY" "dist/Relay.app"
+          codesign --verify --strict --verbose=2 "dist/Relay.app"
+
+      - name: build .dmg
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          packaging/macos/make-dmg.sh \
+            "dist/Relay.app" \
+            "dist/relay-macos-arm64.dmg"
+
+      # Notarize + staple — also gated on the signing secrets plus the
+      # notarization credentials. Skipped (harmlessly) when absent.
+      #   MACOS_NOTARY_APPLE_ID    Apple ID email
+      #   MACOS_NOTARY_PASSWORD    app-specific password for that Apple ID
+      #   MACOS_NOTARY_TEAM_ID     your 10-char Team ID
+      - name: notarize + staple .dmg
+        if: matrix.os == 'macos-latest' && env.MACOS_CERT_P12 != '' && env.MACOS_NOTARY_APPLE_ID != ''
+        shell: bash
+        run: |
+          xcrun notarytool submit "dist/relay-macos-arm64.dmg" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" \
+            --password "$MACOS_NOTARY_PASSWORD" \
+            --team-id  "$MACOS_NOTARY_TEAM_ID" \
+            --wait
+          xcrun stapler staple "dist/relay-macos-arm64.dmg"
+
+      - name: upload .dmg
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: relay-macos-arm64.dmg
+          path: dist/relay-macos-arm64.dmg
           if-no-files-found: error
 
   release:

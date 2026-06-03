@@ -2,6 +2,12 @@
 /target
 **/*.rs.bk
 
+# Local packaging output (.app / .dmg are built by CI / packaging scripts)
+/dist
+
+# macOS Finder cruft
+.DS_Store
+
 # IDE / editor
 .vscode/
 .idea/

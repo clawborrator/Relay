@@ -36,7 +36,7 @@ mod spawn;
 mod status;
 mod token_usage;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
-#[cfg(target_os = "windows")] mod gui;
+#[cfg(any(target_os = "windows", target_os = "macos"))] mod gui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -93,7 +93,10 @@ pub(crate) struct Cli {
     /// installed by `install-task` runs the binary with no arguments
     /// at logon, so multi-hub operators rely on this cache rather
     /// than baking the URL into the autostart command line.
-    #[arg(long, env = "CLAWBORRATOR_HUB_URL")]
+    ///
+    /// `global` so it's accepted both before AND after a subcommand
+    /// (e.g. `login --hub-url X` as well as `--hub-url X login`).
+    #[arg(long, env = "CLAWBORRATOR_HUB_URL", global = true)]
     hub_url: Option<String>,
 
     /// shadows app base URL to pair against for `login`. Resolution:
@@ -102,18 +105,21 @@ pub(crate) struct Cli {
     ///   3. cfg.shadows_url cached at last successful `login`
     ///   4. https://shadows-app.fly.dev (built-in default)
     /// The hub URL is learned FROM shadows during pairing.
-    #[arg(long, env = "CLAWBORRATOR_SHADOWS_URL")]
+    ///
+    /// `global` so `login --shadows-url X` works (the natural place a
+    /// user reaches for it), not just `--shadows-url X login`.
+    #[arg(long, env = "CLAWBORRATOR_SHADOWS_URL", global = true)]
     shadows_url: Option<String>,
 
     /// Bearer token (`cw_pat_*` or `cw_app_*`). Read from
     /// CLAWBORRATOR_PAT env var if not provided. OAuth-driven mint
     /// flow is a follow-on.
-    #[arg(long, env = "CLAWBORRATOR_PAT")]
+    #[arg(long, env = "CLAWBORRATOR_PAT", global = true)]
     pat: Option<String>,
 
     /// Override the machine_id (otherwise read/generated from the
     /// config file at `~/.clawborrator/desktop_v1.json`).
-    #[arg(long, env = "CLAWBORRATOR_MACHINE_ID")]
+    #[arg(long, env = "CLAWBORRATOR_MACHINE_ID", global = true)]
     machine_id: Option<String>,
 
     /// Internal: set on the installed Task-Scheduler entry so the daemon
@@ -1152,14 +1158,14 @@ fn matches_flag(flag: &str, target: &str) -> bool {
 /// True if this machine is already paired (a token is available from the
 /// --pat flag / CLAWBORRATOR_PAT env, both folded into cli.pat by clap,
 /// or cached in the config). Drives whether the first-run wizard shows.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn is_paired(cli: &Cli) -> bool {
     cli.pat.is_some() || load_or_init_config().ok().and_then(|c| c.token).is_some()
 }
 
 /// Shadows app URL to pre-fill in the wizard: --shadows-url / env (both
 /// in cli.shadows_url) -> cached config -> built-in default.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn default_shadows_url(cli: &Cli) -> String {
     cli.shadows_url
         .clone()
@@ -1201,10 +1207,17 @@ fn main() -> Result<()> {
         tray::run_with_tray(cli, log.log_path.clone())
     }
 
-    // macOS: the Cocoa NSApplication pump is thread-affine, so the tray
-    // owns the main thread here too. (No first-run GUI yet on macOS.)
+    // macOS: an interactive launch (NOT the --background LaunchAgent) with
+    // no cached token shows the first-run setup wizard, then exits. The
+    // wizard installs the LaunchAgent, which (RunAtLoad) immediately
+    // re-launches the daemon with --background straight into the tray.
     #[cfg(target_os = "macos")]
     {
+        if !cli.background && !is_paired(&cli) {
+            return gui::run_first_run_wizard(default_shadows_url(&cli));
+        }
+        // The Cocoa NSApplication pump is thread-affine, so the tray owns
+        // the main thread here, as on Windows.
         tray::run_with_tray(cli, log.log_path.clone())
     }
 

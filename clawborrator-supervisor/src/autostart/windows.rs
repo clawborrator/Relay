@@ -24,7 +24,7 @@ use tracing::{info, warn};
 
 use super::{AutostartProvider, AutostartStatus};
 
-const TASK_NAME: &str = "Clawborrator Supervisor";
+const TASK_NAME: &str = "Relay";
 
 pub struct WindowsAutostart;
 

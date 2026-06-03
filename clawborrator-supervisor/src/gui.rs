@@ -1,13 +1,14 @@
-// Windows first-run setup wizard (egui / eframe).
+// First-run setup wizard (egui / eframe) — Windows + macOS.
 //
 // Shown ONLY when the daemon is launched interactively (a user
 // double-click) AND there is no cached token yet. The installed
-// Task-Scheduler entry runs the exe with `--background`, which skips
-// this and goes straight to the tray daemon. So this window is the
-// pair-then-install onboarding for a fresh machine: prompt the shadows
-// app URL, run the device flow, show the code, wait for approval, then
-// offer "install + start the background task" which hands off to the
-// tray daemon and exits.
+// autostart entry (Task Scheduler on Windows, a launchd LaunchAgent on
+// macOS) runs the exe with `--background`, which skips this and goes
+// straight to the tray daemon. So this window is the pair-then-install
+// onboarding for a fresh machine: prompt the shadows app URL, run the
+// device flow, show the code, wait for approval, then offer "install +
+// start the background task" which hands off to the tray daemon and
+// exits.
 //
 // Threading: eframe owns the main thread (the egui event loop). The
 // device flow (async) runs on a worker thread with its own current-
@@ -35,7 +36,7 @@ pub fn run_first_run_wizard(default_shadows_url: String) -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "shadows-desktop setup",
+        "Relay setup",
         options,
         Box::new(move |_cc| {
             Ok(Box::new(Wizard::new(default_shadows_url)) as Box<dyn eframe::App>)
@@ -112,7 +113,7 @@ fn pair_worker(shadows_url: &str, tx: &Sender<Msg>) -> Result<()> {
         .context("tokio runtime for pairing")?;
     rt.block_on(async move {
         let client = oauth::device_flow_client()?;
-        let label = hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_else(|| "windows".into());
+        let label = hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_else(|| "desktop".into());
         let prompt = oauth::request_device_code(&client, shadows_url, &label).await?;
         let _ = tx.send(Msg::Prompt {
             user_code: prompt.user_code.clone(),
@@ -143,11 +144,17 @@ fn pair_worker(shadows_url: &str, tx: &Sender<Msg>) -> Result<()> {
     })
 }
 
-/// Install the Task-Scheduler entry and start it immediately. The Task
-/// runs the exe with `--background`, so it comes up as the tray daemon.
+/// Install the autostart entry and start it immediately. The entry runs
+/// the exe with `--background`, so it comes up as the tray daemon.
+///
+/// Windows: `install` creates the Task but doesn't run it until logon,
+/// so `run_now` (schtasks /Run) kicks it. macOS: `install` bootstraps
+/// the LaunchAgent into the GUI domain and RunAtLoad starts it during
+/// install itself, so there's nothing extra to do.
 fn install_and_run() -> Result<()> {
     let exe = std::env::current_exe().context("locating current exe")?;
     crate::autostart::current().install(&exe).context("installing the background task")?;
+    #[cfg(target_os = "windows")]
     crate::autostart::run_now().context("starting the background task")?;
     Ok(())
 }
@@ -163,7 +170,7 @@ impl eframe::App for Wizard {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
-            ui.heading("shadows-desktop");
+            ui.heading("Relay");
             ui.add_space(10.0);
 
             match &self.stage {

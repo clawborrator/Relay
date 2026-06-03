@@ -41,8 +41,15 @@ use crate::status::TrayStatus;
 #[cfg(target_os = "windows")] pub use windows::run_with_tray;
 #[cfg(target_os = "macos")]   pub use macos::run_with_tray;
 
-const TRAY_PNG: &[u8] = include_bytes!("../../assets/tray.png");
-const TOOLTIP:  &str  = "clawborrator-supervisor";
+// Menu-bar / notification-area icon. macOS gets the all-white glyph
+// (reads on the dark menu bar); Windows gets the full-color glyph
+// (visible on both light and dark taskbars — Windows doesn't tint tray
+// icons). Both are transparent-background PNGs.
+#[cfg(target_os = "macos")]
+const TRAY_PNG: &[u8] = include_bytes!("../../assets/tray-white.png");
+#[cfg(target_os = "windows")]
+const TRAY_PNG: &[u8] = include_bytes!("../../assets/tray-color.png");
+const TOOLTIP:  &str  = "Relay";
 
 // Static menu-item ids. Per-session items use the prefixes below with
 // the session id appended, so the click handler can decode the target.
@@ -91,7 +98,7 @@ fn build_menu(status_label: &str, sessions: &[SessionSummary]) -> Result<Menu> {
 
     // Disabled status header.
     menu.append(&MenuItem::new(
-        format!("clawborrator-supervisor — {status_label}"),
+        format!("Relay — {status_label}"),
         false,
         None,
     ))
