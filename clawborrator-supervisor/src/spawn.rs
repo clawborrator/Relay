@@ -327,6 +327,14 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
                 prepend.push(std::path::PathBuf::from("/opt/homebrew/bin"));
                 prepend.push(std::path::PathBuf::from("/usr/local/bin"));
             }
+            // Node version managers (nvm/fnm/volta/asdf) install node OUTSIDE
+            // the dirs above — only the user's interactive shell puts them on
+            // PATH. A daemon launched by launchd/Task Scheduler/Finder never
+            // sources that shell, so the spawned Claude Code session can't
+            // find `node`, and the clawborrator-mcp bridge (a node process)
+            // dies → the session never connects. Add the managers' node bins
+            // explicitly so node resolves regardless of how Relay was started.
+            prepend.extend(node_manager_bin_dirs(&home));
             let existing = std::env::var_os("PATH").unwrap_or_default();
             let mut new_path = std::ffi::OsString::new();
             for dir in prepend {
@@ -346,6 +354,49 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
     // the only reference that matters.
     drop(pty.slave);
     Ok((pty.master, child))
+}
+
+/// `bin` directories of node version managers (nvm/fnm/volta/asdf),
+/// highest version first. These are the dirs that only the user's
+/// interactive shell normally adds to PATH, so a daemon-spawned process
+/// can't see node without this. Returns only dirs that exist.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn node_manager_bin_dirs(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    // Version dir names like "v22.15.1" / "20.10.0" — sort by the numeric
+    // (major, minor, patch) so v9 doesn't beat v22 (lexical would).
+    fn semver_key(name: &str) -> (u64, u64, u64) {
+        let s = name.trim_start_matches('v');
+        let mut it = s.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+        (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+    }
+    // Collect <ver-dir>/<suffix> for each version under `root`, newest first.
+    fn versioned(root: PathBuf, suffix: &str) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = match std::fs::read_dir(&root) {
+            Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect(),
+            Err(_) => return Vec::new(),
+        };
+        v.sort_by(|a, b| {
+            let ka = a.file_name().and_then(|s| s.to_str()).map(semver_key).unwrap_or_default();
+            let kb = b.file_name().and_then(|s| s.to_str()).map(semver_key).unwrap_or_default();
+            kb.cmp(&ka) // descending — newest version first
+        });
+        v.into_iter().map(|p| p.join(suffix)).filter(|p| p.is_dir()).collect()
+    }
+
+    let mut dirs = Vec::new();
+    // nvm: ~/.nvm/versions/node/<ver>/bin
+    dirs.extend(versioned(home.join(".nvm/versions/node"), "bin"));
+    // fnm: ~/.local/share/fnm or ~/.fnm, node-versions/<ver>/installation/bin
+    for base in [home.join(".local/share/fnm"), home.join(".fnm")] {
+        dirs.extend(versioned(base.join("node-versions"), "installation/bin"));
+    }
+    // volta + asdf use fixed shim dirs.
+    for fixed in [home.join(".volta/bin"), home.join(".asdf/shims")] {
+        if fixed.is_dir() { dirs.push(fixed); }
+    }
+    dirs
 }
 
 /// Drive a reader thread that pumps PTY bytes into a vt100 parser

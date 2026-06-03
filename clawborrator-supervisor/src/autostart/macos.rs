@@ -250,6 +250,10 @@ fn render_plist(exe: &Path, home: &Path) -> String {
   <key>ProgramArguments</key>
   <array>
     <string>{exec}</string>
+    <!-- `--background` marks this as the autostart launch so the daemon
+         goes straight to the tray and never re-opens the first-run
+         setup wizard (parity with the Windows Task Scheduler entry). -->
+    <string>--background</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

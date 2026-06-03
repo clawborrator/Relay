@@ -41,13 +41,21 @@ use crate::status::TrayStatus;
 #[cfg(target_os = "windows")] pub use windows::run_with_tray;
 #[cfg(target_os = "macos")]   pub use macos::run_with_tray;
 
-const TRAY_PNG: &[u8] = include_bytes!("../../assets/tray.png");
-const TOOLTIP:  &str  = "clawborrator-supervisor";
+// Menu-bar / notification-area icon. macOS gets the all-white glyph
+// (reads on the dark menu bar); Windows gets the full-color glyph
+// (visible on both light and dark taskbars — Windows doesn't tint tray
+// icons). Both are transparent-background PNGs.
+#[cfg(target_os = "macos")]
+const TRAY_PNG: &[u8] = include_bytes!("../../assets/tray-white.png");
+#[cfg(target_os = "windows")]
+const TRAY_PNG: &[u8] = include_bytes!("../../assets/tray-color.png");
+const TOOLTIP:  &str  = "Relay";
 
 // Static menu-item ids. Per-session items use the prefixes below with
 // the session id appended, so the click handler can decode the target.
 const ID_DASHBOARD:  &str = "cw:dashboard";
 const ID_LOG:        &str = "cw:log";
+const ID_REPAIR:     &str = "cw:repair";
 const ID_QUIT:       &str = "cw:quit";
 const ATTACH_PREFIX: &str = "cw:attach:";
 const END_PREFIX:    &str = "cw:end:";
@@ -91,7 +99,7 @@ fn build_menu(status_label: &str, sessions: &[SessionSummary]) -> Result<Menu> {
 
     // Disabled status header.
     menu.append(&MenuItem::new(
-        format!("clawborrator-supervisor — {status_label}"),
+        format!("Relay — {status_label}"),
         false,
         None,
     ))
@@ -127,6 +135,11 @@ fn build_menu(status_label: &str, sessions: &[SessionSummary]) -> Result<Menu> {
     menu.append(&MenuItem::with_id(ID_DASHBOARD, "Open dashboard", true, None))
         .map_err(menu_err)?;
     menu.append(&MenuItem::with_id(ID_LOG, "Open log folder", true, None))
+        .map_err(menu_err)?;
+    // Re-pair: re-runs the setup wizard to mint a fresh token. The entry
+    // point for recovering when this machine is deleted hub-side — the
+    // status header shows "AUTH FAILED" and this is how you get back.
+    menu.append(&MenuItem::with_id(ID_REPAIR, "Re-pair this machine…", true, None))
         .map_err(menu_err)?;
     menu.append(&PredefinedMenuItem::separator()).map_err(menu_err)?;
     menu.append(&MenuItem::with_id(ID_QUIT, "Quit", true, None))
@@ -184,6 +197,7 @@ impl MenuState {
 enum MenuAction {
     OpenDashboard,
     OpenLog,
+    Repair,
     Quit,
     Attach(String),
     End(String),
@@ -196,6 +210,8 @@ fn classify(ev: &MenuEvent) -> MenuAction {
         MenuAction::OpenDashboard
     } else if id == ID_LOG {
         MenuAction::OpenLog
+    } else if id == ID_REPAIR {
+        MenuAction::Repair
     } else if id == ID_QUIT {
         MenuAction::Quit
     } else if let Some(sid) = id.strip_prefix(ATTACH_PREFIX) {
@@ -227,6 +243,7 @@ fn drain_menu_events(
             // Daily-rolled log — open the folder so the operator can
             // pick the current day's file.
             MenuAction::OpenLog => open_path(log_path.parent().unwrap_or(&log_path)),
+            MenuAction::Repair => open_repair_wizard(),
             MenuAction::Attach(sid) => open_attach_terminal(&sid),
             MenuAction::End(sid) => match crate::spawn::kill_session(&mgr, &sid) {
                 Ok(())  => info!(session_id = %sid, "ended session from tray"),
@@ -240,6 +257,52 @@ fn drain_menu_events(
             MenuAction::Unknown => {}
         }
     }
+}
+
+/// Launch the setup wizard in RE-PAIR mode as a separate process. The
+/// tray owns this process's GUI event loop (Win32 message pump /
+/// NSApplication), so the egui wizard can't run in-process — a fresh
+/// `relay --repair` process gets its own main thread. On a successful
+/// re-pair it writes a new token to the config; this running daemon
+/// picks it up on its next reconnect (see `run_with_reconnect`), so no
+/// restart is needed.
+fn open_repair_wizard() {
+    let exe = match std::env::current_exe() {
+        Ok(e)  => e,
+        Err(e) => { warn!(?e, "could not resolve current exe for re-pair"); return; }
+    };
+
+    // macOS: if we live inside Relay.app, launch a fresh instance THROUGH
+    // the bundle (`open -n …`) so LaunchServices gives the wizard the
+    // bundle's Dock icon (the Relay molecule). Spawning the bare binary
+    // directly skips LaunchServices and the window gets the generic
+    // executable icon instead.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = macos_app_bundle(&exe) {
+        match std::process::Command::new("open")
+            .arg("-n").arg(&bundle).arg("--args").arg("--repair")
+            .spawn()
+        {
+            Ok(_)  => return,
+            Err(e) => warn!(?e, "open -n <bundle> failed; falling back to direct spawn"),
+        }
+    }
+
+    if let Err(e) = std::process::Command::new(&exe).arg("--repair").spawn() {
+        warn!(?e, "failed to launch re-pair wizard");
+    }
+}
+
+/// If `exe` is `<name>.app/Contents/MacOS/<bin>`, return the `.app` path.
+#[cfg(target_os = "macos")]
+fn macos_app_bundle(exe: &Path) -> Option<PathBuf> {
+    let macos    = exe.parent()?;        // …/Contents/MacOS
+    let contents = macos.parent()?;      // …/Contents
+    let bundle   = contents.parent()?;   // …/<name>.app
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| bundle.to_path_buf())
 }
 
 /// Open a path in the user's default handler. Best-effort — failures

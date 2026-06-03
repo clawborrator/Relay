@@ -1,13 +1,14 @@
-// Windows first-run setup wizard (egui / eframe).
+// First-run setup wizard (egui / eframe) — Windows + macOS.
 //
 // Shown ONLY when the daemon is launched interactively (a user
 // double-click) AND there is no cached token yet. The installed
-// Task-Scheduler entry runs the exe with `--background`, which skips
-// this and goes straight to the tray daemon. So this window is the
-// pair-then-install onboarding for a fresh machine: prompt the shadows
-// app URL, run the device flow, show the code, wait for approval, then
-// offer "install + start the background task" which hands off to the
-// tray daemon and exits.
+// autostart entry (Task Scheduler on Windows, a launchd LaunchAgent on
+// macOS) runs the exe with `--background`, which skips this and goes
+// straight to the tray daemon. So this window is the pair-then-install
+// onboarding for a fresh machine: prompt the shadows app URL, run the
+// device flow, show the code, wait for approval, then offer "install +
+// start the background task" which hands off to the tray daemon and
+// exits.
 //
 // Threading: eframe owns the main thread (the egui event loop). The
 // device flow (async) runs on a worker thread with its own current-
@@ -26,22 +27,77 @@ use crate::oauth::{self, PollStep};
 const WIN_W: f32 = 500.0;
 const WIN_H: f32 = 380.0;
 
+/// First-run vs. re-pair. First-run offers to install + start the
+/// autostart entry after pairing; re-pair (machine deleted hub-side, the
+/// daemon is already running) just writes a fresh token and tells the
+/// user the daemon will reconnect on its own.
+#[derive(Clone, Copy, PartialEq)]
+pub enum WizardMode {
+    FirstRun,
+    Repair,
+}
+
 /// Open the setup window and block until the user finishes or closes it.
-pub fn run_first_run_wizard(default_shadows_url: String) -> Result<()> {
+pub fn run_setup_wizard(default_shadows_url: String, mode: WizardMode) -> Result<()> {
+    let title = match mode {
+        WizardMode::FirstRun => "Relay setup",
+        WizardMode::Repair   => "Relay — re-pair this machine",
+    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([WIN_W, WIN_H])
+        .with_resizable(false);
+    // Explicitly set the window / Dock icon. Without this, eframe falls
+    // back to its built-in default logo (a lowercase "e"), which it
+    // pushes to the macOS Dock — overriding even the .app bundle icon.
+    if let Some(icon) = relay_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([WIN_W, WIN_H])
-            .with_resizable(false),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
-        "shadows-desktop setup",
+        title,
         options,
         Box::new(move |_cc| {
-            Ok(Box::new(Wizard::new(default_shadows_url)) as Box<dyn eframe::App>)
+            // Runs on the main thread after eframe has created its
+            // NSApplication, so this overrides eframe's default Dock icon.
+            #[cfg(target_os = "macos")]
+            set_macos_dock_icon();
+            Ok(Box::new(Wizard::new(default_shadows_url, mode)) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow!("gui failed: {e}"))
+}
+
+/// Force the macOS Dock icon to the Relay molecule. The Dock icon is
+/// `NSApplication.applicationIconImage`; eframe sets it from its viewport
+/// IconData (defaulting to its built-in "e" logo). Setting it directly,
+/// on the main thread after eframe init, makes it unambiguous and
+/// independent of how the process was launched (bundle vs. bare binary).
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(include_bytes!("../assets/app-icon.png"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        // setApplicationIconImage is unsafe in objc2 (it takes a raw
+        // image ref); the image we built is valid for the call's duration.
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)); }
+    }
+}
+
+/// Decode the app icon (the full-color Relay molecule) into an eframe
+/// IconData for the window / Dock icon, overriding eframe's default "e"
+/// logo. Returns None if decode fails — eframe then keeps its default.
+fn relay_icon() -> Option<std::sync::Arc<egui::IconData>> {
+    let img = image::load_from_memory(include_bytes!("../assets/app-icon.png"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(std::sync::Arc::new(egui::IconData { rgba: img.into_raw(), width, height }))
 }
 
 enum Stage {
@@ -59,6 +115,7 @@ enum Msg {
 }
 
 struct Wizard {
+    mode:           WizardMode,
     stage:          Stage,
     url_input:      String,
     rx:             Option<Receiver<Msg>>,
@@ -67,8 +124,8 @@ struct Wizard {
 }
 
 impl Wizard {
-    fn new(default_shadows_url: String) -> Self {
-        Self { stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None }
+    fn new(default_shadows_url: String, mode: WizardMode) -> Self {
+        Self { mode, stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None }
     }
 
     fn start_pairing(&mut self, ctx: &egui::Context) {
@@ -112,7 +169,7 @@ fn pair_worker(shadows_url: &str, tx: &Sender<Msg>) -> Result<()> {
         .context("tokio runtime for pairing")?;
     rt.block_on(async move {
         let client = oauth::device_flow_client()?;
-        let label = hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_else(|| "windows".into());
+        let label = hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_else(|| "desktop".into());
         let prompt = oauth::request_device_code(&client, shadows_url, &label).await?;
         let _ = tx.send(Msg::Prompt {
             user_code: prompt.user_code.clone(),
@@ -143,11 +200,17 @@ fn pair_worker(shadows_url: &str, tx: &Sender<Msg>) -> Result<()> {
     })
 }
 
-/// Install the Task-Scheduler entry and start it immediately. The Task
-/// runs the exe with `--background`, so it comes up as the tray daemon.
+/// Install the autostart entry and start it immediately. The entry runs
+/// the exe with `--background`, so it comes up as the tray daemon.
+///
+/// Windows: `install` creates the Task but doesn't run it until logon,
+/// so `run_now` (schtasks /Run) kicks it. macOS: `install` bootstraps
+/// the LaunchAgent into the GUI domain and RunAtLoad starts it during
+/// install itself, so there's nothing extra to do.
 fn install_and_run() -> Result<()> {
     let exe = std::env::current_exe().context("locating current exe")?;
     crate::autostart::current().install(&exe).context("installing the background task")?;
+    #[cfg(target_os = "windows")]
     crate::autostart::run_now().context("starting the background task")?;
     Ok(())
 }
@@ -163,17 +226,24 @@ impl eframe::App for Wizard {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
-            ui.heading("shadows-desktop");
+            ui.heading("Relay");
             ui.add_space(10.0);
 
             match &self.stage {
                 Stage::EnterUrl => {
-                    ui.label("Pair this machine with your shadows app to get started.");
+                    match self.mode {
+                        WizardMode::FirstRun => ui.label("Pair this machine with your shadows app to get started."),
+                        WizardMode::Repair   => ui.label("This machine is no longer registered. Re-pair it to reconnect."),
+                    };
                     ui.add_space(12.0);
                     ui.label("Shadows app URL:");
                     ui.text_edit_singleline(&mut self.url_input);
                     ui.add_space(14.0);
-                    if ui.button("Pair this machine").clicked() {
+                    let label = match self.mode {
+                        WizardMode::FirstRun => "Pair this machine",
+                        WizardMode::Repair   => "Re-pair this machine",
+                    };
+                    if ui.button(label).clicked() {
                         self.start_pairing(ctx);
                     }
                 }
@@ -189,25 +259,39 @@ impl eframe::App for Wizard {
                         ui.label("Waiting for approval...");
                     });
                 }
-                Stage::Paired => {
-                    ui.label("Paired. This machine is now connected to your shadows hub.");
-                    ui.add_space(12.0);
-                    ui.label("Install the background task so shadows-desktop starts at logon and runs in the tray:");
-                    ui.add_space(10.0);
-                    if ui.button("Install and start background task").clicked() {
-                        match install_and_run() {
-                            Ok(()) => {
-                                self.install_status = Some("Installed and started. Closing...".into());
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                Stage::Paired => match self.mode {
+                    // First run: offer to install + start the autostart entry,
+                    // which brings the tray daemon up.
+                    WizardMode::FirstRun => {
+                        ui.label("Paired. This machine is now connected to your shadows hub.");
+                        ui.add_space(12.0);
+                        ui.label("Install the background task so Relay starts at logon and runs in the tray:");
+                        ui.add_space(10.0);
+                        if ui.button("Install and start background task").clicked() {
+                            match install_and_run() {
+                                Ok(()) => {
+                                    self.install_status = Some("Installed and started. Closing...".into());
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                Err(e) => self.install_status = Some(format!("Install failed: {e:#}")),
                             }
-                            Err(e) => self.install_status = Some(format!("Install failed: {e:#}")),
+                        }
+                        if let Some(s) = &self.install_status {
+                            ui.add_space(10.0);
+                            ui.label(s);
                         }
                     }
-                    if let Some(s) = &self.install_status {
-                        ui.add_space(10.0);
-                        ui.label(s);
+                    // Re-pair: the daemon is already running; it reloads the
+                    // fresh token on its next reconnect (≤60s). Nothing to
+                    // install — just confirm and let the user close.
+                    WizardMode::Repair => {
+                        ui.label("Re-paired. Relay will reconnect with the new credentials shortly.");
+                        ui.add_space(12.0);
+                        if ui.button("Done").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
-                }
+                },
                 Stage::Failed(e) => {
                     ui.colored_label(egui::Color32::from_rgb(200, 60, 60), format!("Pairing failed: {e}"));
                     ui.add_space(12.0);
