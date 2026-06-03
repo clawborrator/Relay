@@ -80,7 +80,7 @@ const LIVENESS_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "clawborrator desktop supervisor daemon")]
+#[command(name = "relay", author, version, about = "Relay — pair this machine with a clawborrator hub via the shadows app")]
 pub(crate) struct Cli {
     /// Hub base URL. Resolution order (first match wins):
     ///   1. --hub-url <url>            (this flag)
