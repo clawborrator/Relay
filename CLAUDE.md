@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-**shadows-desktop** — A desktop daemon (v0.2.0) that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app.
+**Relay** (`shadows-desktop` crate, v0.3.0) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
 
 Fork of `desktop_v1` (`clawborrator-supervisor`). The only behavioral difference is authentication: instead of pairing against the hub's GitHub OAuth, it pairs against the **shadows app** (Google/Zoho SSO). Shadows brokers a hub token for the user's shadow principal. Everything downstream (the `/supervisor` WebSocket, session spawn/kill/restart, channel-token plumbing) is unchanged from desktop_v1.
 
@@ -13,21 +13,21 @@ Fork of `desktop_v1` (`clawborrator-supervisor`). The only behavioral difference
 ```bash
 # Build
 cargo build --release
-# Binary: target/release/shadows-desktop
+# Binary: target/release/relay  (relay.exe on Windows)
 
-# First-run pairing (opens a GUI wizard on Windows/macOS, or runs interactively on Linux)
-shadows-desktop login [--shadows-url https://shadows-app.fly.dev]
+# First-run pairing (opens GUI wizard on Windows/macOS; interactive on Linux)
+relay login [--shadows-url https://shadows-app.fly.dev]
 
 # Run the daemon (uses cached token + hub URL from pairing)
-shadows-desktop
+relay
 
 # Autostart management
-shadows-desktop install-task     # add to Task Scheduler / launchd
-shadows-desktop uninstall-task
-shadows-desktop task-status
+relay install-task     # add to Task Scheduler / launchd
+relay uninstall-task
+relay task-status
 
 # Unpair
-shadows-desktop logout
+relay logout
 ```
 
 Cargo 1.75+ required (workspace pins `rust-version = "1.75"`).
@@ -38,11 +38,12 @@ Cargo 1.75+ required (workspace pins `rust-version = "1.75"`).
 
 | Module | Purpose |
 |--------|---------|
-| `main.rs` | CLI entry point, WS daemon loop, reconnect with exponential backoff |
+| `main.rs` | CLI entry point (`relay`), WS daemon loop, reconnect with exponential backoff |
 | `oauth.rs` | **The key divergence from desktop_v1.** Device flow targets `shadows` app instead of GitHub. Polls `shadows /device/token`, gets back `{ access_token, hub_url }`. |
 | `auth.rs` | Token cache load/save; `~/.clawborrator/shadows-desktop.json` |
-| `gui.rs` | **First-run setup wizard** (egui/eframe, Windows + macOS only). Opens when launched interactively with no cached token. Prompts for the shadows URL, runs the device flow, shows the user code, waits for approval, then offers "install + start background task". |
-| `autostart/` | Platform-specific autostart: `windows.rs` (Task Scheduler via `schtasks.exe`), macOS via `launchd` LaunchAgent. Registered under `--background` flag to skip the GUI. |
+| `gui.rs` | **Setup wizard** (egui/eframe, Windows + macOS). `run_setup_wizard(url, WizardMode)` — `WizardMode::FirstRun` offers install+start after pairing; `WizardMode::Repair` just refreshes the token for an already-running daemon. Sets the Relay molecule as the Dock/window icon. |
+| `autostart/` | Platform-specific autostart: `windows.rs` (Task Scheduler "Relay"), macOS via `launchd` LaunchAgent (passes `--background` to skip the wizard). Linux: `relay.service` systemd-user unit. |
+| `build.rs` | Windows-only: embeds `assets/app-icon.ico` into `relay.exe` via `winresource`. No-op on macOS/Linux. |
 | `sessions.rs` | Session lifecycle, `SharingPolicy` (allowed_roots, max_concurrent_sessions) |
 | `spawn.rs` | `create_session`, `destroy_session`, `restart_session`, etc. + `sweep_orphan_scratch_dirs` |
 | `ipc.rs` | Per-install IPC socket (distinct from desktop_v1 — coexists on the same machine) |
@@ -54,14 +55,14 @@ Cargo 1.75+ required (workspace pins `rust-version = "1.75"`).
 
 ### Config file
 
-`~/.clawborrator/shadows-desktop.json` caches: access token, learned hub URL, `machine_id` (stable per-install UUID), and the shadows URL used for pairing.
+`~/.clawborrator/shadows-desktop.json` caches: access token, learned hub URL, `machine_id` (stable per-install UUID), and the shadows URL used for pairing. The re-pair wizard (`WizardMode::Repair`) overwrites this file with a fresh token without restarting the daemon.
 
 **Desktop-sharing guardrails** (from desktop_v1): `allowed_roots` and `max_concurrent_sessions` in the config file control what a shared user may spawn.
 
 ### Pairing flow
 
 ```
-1. shadows-desktop login
+1. relay login
      → prints user_code, polls shadows /device/token
 2. User opens shadows app (already signed in with Google/Zoho),
    goes to "Pair a machine", enters the code
@@ -79,17 +80,17 @@ Runs on every push/PR to `main`. `cargo check --locked` + `cargo build --locked`
 
 ### Release (`.github/workflows/release.yml`)
 Triggered by a `v*` tag push. Builds native binaries for:
-- `shadows-desktop-macos-arm64` + `.dmg` (unsigned unless `MACOS_CERT_P12` secret is set)
-- `shadows-desktop-windows-x64.exe`
-- `shadows-desktop-linux-x64`
+- `relay-macos-arm64.dmg` — macOS only ships the `.dmg` (raw binary excluded; it's unsigned and Gatekeeper-blocked)
+- `relay-windows-x64.exe`
+- `relay-linux-x64`
 
-Creating a release: `git tag v0.2.0 && git push origin v0.2.0`
+Creating a release: `git tag v0.3.0 && git push origin v0.3.0`
 
-macOS `.dmg` packaging scripts are in `packaging/macos/`.
+macOS `.dmg` packaging scripts are in `packaging/macos/`. The `.dmg` is unsigned unless `MACOS_CERT_P12` / notarization secrets are configured.
 
 ## Relationship to desktop_v1
 
-Kept as a thin fork. Divergence confined to `src/oauth.rs` (device flow targets shadows, returns hub URL) and `src/auth.rs` + login plumbing in `src/main.rs`. Crate dir stays `clawborrator-supervisor/` to keep the fork diff small; the binary is named `shadows-desktop`.
+Kept as a thin fork. Divergence confined to `src/oauth.rs` (device flow targets shadows, returns hub URL) and `src/auth.rs` + login plumbing in `src/main.rs`. Crate dir stays `clawborrator-supervisor/` to keep the fork diff small; the binary is named `relay` (clap `command_name` set explicitly in `main.rs`).
 
 Upstream WS/session fixes can be pulled from desktop_v1 with minimal conflict since the auth modules are the only changed surface area.
 
@@ -97,7 +98,7 @@ Upstream WS/session fixes can be pulled from desktop_v1 with minimal conflict si
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `DAEMON_VERSION` | from Cargo.toml (currently `0.2.0`) | Sent in the `hello` WS frame |
+| `DAEMON_VERSION` | from Cargo.toml (currently `0.3.0`) | Sent in the `hello` WS frame |
 | `DEFAULT_SHADOWS_URL` | `https://shadows-app.fly.dev` | Default pairing target |
 | `PING_INTERVAL` | 30s | WS keepalive |
 | `LIVENESS_TIMEOUT` | 90s | No-frame deadline before forced reconnect |
