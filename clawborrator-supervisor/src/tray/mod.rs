@@ -271,9 +271,38 @@ fn open_repair_wizard() {
         Ok(e)  => e,
         Err(e) => { warn!(?e, "could not resolve current exe for re-pair"); return; }
     };
+
+    // macOS: if we live inside Relay.app, launch a fresh instance THROUGH
+    // the bundle (`open -n …`) so LaunchServices gives the wizard the
+    // bundle's Dock icon (the Relay molecule). Spawning the bare binary
+    // directly skips LaunchServices and the window gets the generic
+    // executable icon instead.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = macos_app_bundle(&exe) {
+        match std::process::Command::new("open")
+            .arg("-n").arg(&bundle).arg("--args").arg("--repair")
+            .spawn()
+        {
+            Ok(_)  => return,
+            Err(e) => warn!(?e, "open -n <bundle> failed; falling back to direct spawn"),
+        }
+    }
+
     if let Err(e) = std::process::Command::new(&exe).arg("--repair").spawn() {
         warn!(?e, "failed to launch re-pair wizard");
     }
+}
+
+/// If `exe` is `<name>.app/Contents/MacOS/<bin>`, return the `.app` path.
+#[cfg(target_os = "macos")]
+fn macos_app_bundle(exe: &Path) -> Option<PathBuf> {
+    let macos    = exe.parent()?;        // …/Contents/MacOS
+    let contents = macos.parent()?;      // …/Contents
+    let bundle   = contents.parent()?;   // …/<name>.app
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| bundle.to_path_buf())
 }
 
 /// Open a path in the user's default handler. Best-effort — failures
