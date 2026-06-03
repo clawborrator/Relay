@@ -20,12 +20,21 @@ The shadows app's SSO is the trust root.
 
 Grab the latest build from the [Releases](../../releases) page.
 
-### macOS (app)
+### macOS
 
-1. Download `relay-macos-arm64.dmg`, open it, and drag **Relay** to
-   Applications.
-2. Launch Relay. A setup window walks you through pairing (below); once
-   paired it installs a login agent and lives in the menu bar.
+1. Download `relay-macos-arm64.dmg` and open it.
+2. In the window that appears, **drag Relay onto the Applications
+   folder**.
+3. Open your **Applications** folder and launch **Relay** from there. A
+   setup window walks you through pairing (below); once paired, Relay
+   installs a login agent and lives in the menu bar.
+
+Prefer the CLI? The same `relay` binary lives inside the app — symlink it
+onto your PATH:
+
+```
+ln -s /Applications/Relay.app/Contents/MacOS/relay /usr/local/bin/relay
+```
 
 ### Windows
 
@@ -35,9 +44,9 @@ system tray. No admin elevation required.
 
 ### Linux / headless
 
-Download `relay-linux-x64` (or the raw `relay-macos-arm64` CLI binary),
-mark it executable, and pair from the terminal — Linux runs headless via
-a systemd-user service.
+Download `relay-linux-x64`, mark it executable, and pair from the
+terminal — Linux runs headless via a systemd-user service. (On macOS,
+use the binary inside `Relay.app` as shown above.)
 
 ### Build from source
 

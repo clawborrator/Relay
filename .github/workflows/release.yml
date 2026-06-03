@@ -83,7 +83,11 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
 
+      # Upload the raw binary for Windows/Linux. macOS ships ONLY the
+      # signed+notarized .dmg (the same binary lives inside Relay.app); a
+      # standalone unsigned macOS binary would just trip Gatekeeper.
       - uses: actions/upload-artifact@v7
+        if: matrix.os != 'macos-latest'
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
