@@ -27,8 +27,22 @@ use crate::oauth::{self, PollStep};
 const WIN_W: f32 = 500.0;
 const WIN_H: f32 = 380.0;
 
+/// First-run vs. re-pair. First-run offers to install + start the
+/// autostart entry after pairing; re-pair (machine deleted hub-side, the
+/// daemon is already running) just writes a fresh token and tells the
+/// user the daemon will reconnect on its own.
+#[derive(Clone, Copy, PartialEq)]
+pub enum WizardMode {
+    FirstRun,
+    Repair,
+}
+
 /// Open the setup window and block until the user finishes or closes it.
-pub fn run_first_run_wizard(default_shadows_url: String) -> Result<()> {
+pub fn run_setup_wizard(default_shadows_url: String, mode: WizardMode) -> Result<()> {
+    let title = match mode {
+        WizardMode::FirstRun => "Relay setup",
+        WizardMode::Repair   => "Relay — re-pair this machine",
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([WIN_W, WIN_H])
@@ -36,10 +50,10 @@ pub fn run_first_run_wizard(default_shadows_url: String) -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Relay setup",
+        title,
         options,
         Box::new(move |_cc| {
-            Ok(Box::new(Wizard::new(default_shadows_url)) as Box<dyn eframe::App>)
+            Ok(Box::new(Wizard::new(default_shadows_url, mode)) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow!("gui failed: {e}"))
@@ -60,6 +74,7 @@ enum Msg {
 }
 
 struct Wizard {
+    mode:           WizardMode,
     stage:          Stage,
     url_input:      String,
     rx:             Option<Receiver<Msg>>,
@@ -68,8 +83,8 @@ struct Wizard {
 }
 
 impl Wizard {
-    fn new(default_shadows_url: String) -> Self {
-        Self { stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None }
+    fn new(default_shadows_url: String, mode: WizardMode) -> Self {
+        Self { mode, stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None }
     }
 
     fn start_pairing(&mut self, ctx: &egui::Context) {
@@ -175,12 +190,19 @@ impl eframe::App for Wizard {
 
             match &self.stage {
                 Stage::EnterUrl => {
-                    ui.label("Pair this machine with your shadows app to get started.");
+                    match self.mode {
+                        WizardMode::FirstRun => ui.label("Pair this machine with your shadows app to get started."),
+                        WizardMode::Repair   => ui.label("This machine is no longer registered. Re-pair it to reconnect."),
+                    };
                     ui.add_space(12.0);
                     ui.label("Shadows app URL:");
                     ui.text_edit_singleline(&mut self.url_input);
                     ui.add_space(14.0);
-                    if ui.button("Pair this machine").clicked() {
+                    let label = match self.mode {
+                        WizardMode::FirstRun => "Pair this machine",
+                        WizardMode::Repair   => "Re-pair this machine",
+                    };
+                    if ui.button(label).clicked() {
                         self.start_pairing(ctx);
                     }
                 }
@@ -196,25 +218,39 @@ impl eframe::App for Wizard {
                         ui.label("Waiting for approval...");
                     });
                 }
-                Stage::Paired => {
-                    ui.label("Paired. This machine is now connected to your shadows hub.");
-                    ui.add_space(12.0);
-                    ui.label("Install the background task so shadows-desktop starts at logon and runs in the tray:");
-                    ui.add_space(10.0);
-                    if ui.button("Install and start background task").clicked() {
-                        match install_and_run() {
-                            Ok(()) => {
-                                self.install_status = Some("Installed and started. Closing...".into());
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                Stage::Paired => match self.mode {
+                    // First run: offer to install + start the autostart entry,
+                    // which brings the tray daemon up.
+                    WizardMode::FirstRun => {
+                        ui.label("Paired. This machine is now connected to your shadows hub.");
+                        ui.add_space(12.0);
+                        ui.label("Install the background task so Relay starts at logon and runs in the tray:");
+                        ui.add_space(10.0);
+                        if ui.button("Install and start background task").clicked() {
+                            match install_and_run() {
+                                Ok(()) => {
+                                    self.install_status = Some("Installed and started. Closing...".into());
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                Err(e) => self.install_status = Some(format!("Install failed: {e:#}")),
                             }
-                            Err(e) => self.install_status = Some(format!("Install failed: {e:#}")),
+                        }
+                        if let Some(s) = &self.install_status {
+                            ui.add_space(10.0);
+                            ui.label(s);
                         }
                     }
-                    if let Some(s) = &self.install_status {
-                        ui.add_space(10.0);
-                        ui.label(s);
+                    // Re-pair: the daemon is already running; it reloads the
+                    // fresh token on its next reconnect (≤60s). Nothing to
+                    // install — just confirm and let the user close.
+                    WizardMode::Repair => {
+                        ui.label("Re-paired. Relay will reconnect with the new credentials shortly.");
+                        ui.add_space(12.0);
+                        if ui.button("Done").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
-                }
+                },
                 Stage::Failed(e) => {
                     ui.colored_label(egui::Color32::from_rgb(200, 60, 60), format!("Pairing failed: {e}"));
                     ui.add_space(12.0);

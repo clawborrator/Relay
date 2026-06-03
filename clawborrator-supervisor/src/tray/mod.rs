@@ -55,6 +55,7 @@ const TOOLTIP:  &str  = "Relay";
 // the session id appended, so the click handler can decode the target.
 const ID_DASHBOARD:  &str = "cw:dashboard";
 const ID_LOG:        &str = "cw:log";
+const ID_REPAIR:     &str = "cw:repair";
 const ID_QUIT:       &str = "cw:quit";
 const ATTACH_PREFIX: &str = "cw:attach:";
 const END_PREFIX:    &str = "cw:end:";
@@ -135,6 +136,11 @@ fn build_menu(status_label: &str, sessions: &[SessionSummary]) -> Result<Menu> {
         .map_err(menu_err)?;
     menu.append(&MenuItem::with_id(ID_LOG, "Open log folder", true, None))
         .map_err(menu_err)?;
+    // Re-pair: re-runs the setup wizard to mint a fresh token. The entry
+    // point for recovering when this machine is deleted hub-side — the
+    // status header shows "AUTH FAILED" and this is how you get back.
+    menu.append(&MenuItem::with_id(ID_REPAIR, "Re-pair this machine…", true, None))
+        .map_err(menu_err)?;
     menu.append(&PredefinedMenuItem::separator()).map_err(menu_err)?;
     menu.append(&MenuItem::with_id(ID_QUIT, "Quit", true, None))
         .map_err(menu_err)?;
@@ -191,6 +197,7 @@ impl MenuState {
 enum MenuAction {
     OpenDashboard,
     OpenLog,
+    Repair,
     Quit,
     Attach(String),
     End(String),
@@ -203,6 +210,8 @@ fn classify(ev: &MenuEvent) -> MenuAction {
         MenuAction::OpenDashboard
     } else if id == ID_LOG {
         MenuAction::OpenLog
+    } else if id == ID_REPAIR {
+        MenuAction::Repair
     } else if id == ID_QUIT {
         MenuAction::Quit
     } else if let Some(sid) = id.strip_prefix(ATTACH_PREFIX) {
@@ -234,6 +243,7 @@ fn drain_menu_events(
             // Daily-rolled log — open the folder so the operator can
             // pick the current day's file.
             MenuAction::OpenLog => open_path(log_path.parent().unwrap_or(&log_path)),
+            MenuAction::Repair => open_repair_wizard(),
             MenuAction::Attach(sid) => open_attach_terminal(&sid),
             MenuAction::End(sid) => match crate::spawn::kill_session(&mgr, &sid) {
                 Ok(())  => info!(session_id = %sid, "ended session from tray"),
@@ -246,6 +256,23 @@ fn drain_menu_events(
             }
             MenuAction::Unknown => {}
         }
+    }
+}
+
+/// Launch the setup wizard in RE-PAIR mode as a separate process. The
+/// tray owns this process's GUI event loop (Win32 message pump /
+/// NSApplication), so the egui wizard can't run in-process — a fresh
+/// `relay --repair` process gets its own main thread. On a successful
+/// re-pair it writes a new token to the config; this running daemon
+/// picks it up on its next reconnect (see `run_with_reconnect`), so no
+/// restart is needed.
+fn open_repair_wizard() {
+    let exe = match std::env::current_exe() {
+        Ok(e)  => e,
+        Err(e) => { warn!(?e, "could not resolve current exe for re-pair"); return; }
+    };
+    if let Err(e) = std::process::Command::new(&exe).arg("--repair").spawn() {
+        warn!(?e, "failed to launch re-pair wizard");
     }
 }
 

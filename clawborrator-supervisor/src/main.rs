@@ -129,6 +129,15 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     background: bool,
 
+    /// Internal: open the setup wizard in RE-PAIR mode even when a
+    /// (now-stale) token is already cached — used by the tray's
+    /// "Re-pair this machine…" item after a machine is deleted hub-side.
+    /// Unlike first-run, it skips the autostart-install step (the daemon
+    /// is already running) and just writes a fresh token, which the
+    /// running daemon picks up on its next reconnect.
+    #[arg(long, hide = true)]
+    repair: bool,
+
     /// No subcommand = run the daemon (default). Subcommands manage
     /// the platform's autostart entry so the daemon launches at
     /// user logon.
@@ -751,9 +760,26 @@ where
     Ok(())
 }
 
-async fn run_with_reconnect(ctx: DaemonCtx, ws_url: Url, cfg: Config) -> Result<()> {
+async fn run_with_reconnect(mut ctx: DaemonCtx, ws_url: Url, cfg: Config) -> Result<()> {
     let mut backoff = RECONNECT_BACKOFF_INITIAL;
     loop {
+        // Reload the cached token before each attempt so a RE-PAIR (the
+        // setup wizard writing a fresh token after this machine was
+        // deleted hub-side) is picked up WITHOUT restarting the daemon.
+        // Without this, an `auth_failed` token would be retried forever.
+        // Only the bearer is refreshed — machine_id/hub are stable across
+        // a re-pair against the same hub.
+        if let Ok(fresh) = load_or_init_config() {
+            if let Some(tok) = fresh.token {
+                if tok != ctx.pat {
+                    info!("cached token changed on disk (re-pair); reconnecting with the new credentials");
+                    ctx.pat = tok;
+                    // A fresh token is worth an immediate retry, not the
+                    // grown backoff from the prior auth failures.
+                    backoff = RECONNECT_BACKOFF_INITIAL;
+                }
+            }
+        }
         match run_session(&ctx, &ws_url, &cfg).await {
             Ok(()) => {
                 info!("session ended cleanly; reconnecting in {:?}", RECONNECT_BACKOFF_INITIAL);
@@ -1198,8 +1224,13 @@ fn main() -> Result<()> {
     // the daemon with --background and goes straight to the tray.
     #[cfg(target_os = "windows")]
     {
+        // Re-pair mode (tray "Re-pair this machine…") forces the wizard
+        // even though a stale token is cached, then exits.
+        if cli.repair {
+            return gui::run_setup_wizard(default_shadows_url(&cli), gui::WizardMode::Repair);
+        }
         if !cli.background && !is_paired(&cli) {
-            return gui::run_first_run_wizard(default_shadows_url(&cli));
+            return gui::run_setup_wizard(default_shadows_url(&cli), gui::WizardMode::FirstRun);
         }
         // Tray owns the main thread (the Win32 message loop is
         // thread-affine); the daemon future runs on a tokio worker
@@ -1213,8 +1244,11 @@ fn main() -> Result<()> {
     // re-launches the daemon with --background straight into the tray.
     #[cfg(target_os = "macos")]
     {
+        if cli.repair {
+            return gui::run_setup_wizard(default_shadows_url(&cli), gui::WizardMode::Repair);
+        }
         if !cli.background && !is_paired(&cli) {
-            return gui::run_first_run_wizard(default_shadows_url(&cli));
+            return gui::run_setup_wizard(default_shadows_url(&cli), gui::WizardMode::FirstRun);
         }
         // The Cocoa NSApplication pump is thread-affine, so the tray owns
         // the main thread here, as on Windows.
