@@ -27,9 +27,6 @@ Grab the latest build from the [Releases](../../releases) page.
 2. Launch Relay. A setup window walks you through pairing (below); once
    paired it installs a login agent and lives in the menu bar.
 
-The `.dmg` is Developer-ID-signed and notarized, so it opens with a
-normal double-click — no Gatekeeper override needed.
-
 ### Windows
 
 Download and run `relay-windows-x64.exe`. First launch shows the setup
