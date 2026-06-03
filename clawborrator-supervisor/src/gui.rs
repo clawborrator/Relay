@@ -43,20 +43,61 @@ pub fn run_setup_wizard(default_shadows_url: String, mode: WizardMode) -> Result
         WizardMode::FirstRun => "Relay setup",
         WizardMode::Repair   => "Relay — re-pair this machine",
     };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([WIN_W, WIN_H])
+        .with_resizable(false);
+    // Explicitly set the window / Dock icon. Without this, eframe falls
+    // back to its built-in default logo (a lowercase "e"), which it
+    // pushes to the macOS Dock — overriding even the .app bundle icon.
+    if let Some(icon) = relay_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([WIN_W, WIN_H])
-            .with_resizable(false),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
         title,
         options,
         Box::new(move |_cc| {
+            // Runs on the main thread after eframe has created its
+            // NSApplication, so this overrides eframe's default Dock icon.
+            #[cfg(target_os = "macos")]
+            set_macos_dock_icon();
             Ok(Box::new(Wizard::new(default_shadows_url, mode)) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow!("gui failed: {e}"))
+}
+
+/// Force the macOS Dock icon to the Relay molecule. The Dock icon is
+/// `NSApplication.applicationIconImage`; eframe sets it from its viewport
+/// IconData (defaulting to its built-in "e" logo). Setting it directly,
+/// on the main thread after eframe init, makes it unambiguous and
+/// independent of how the process was launched (bundle vs. bare binary).
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(include_bytes!("../assets/app-icon.png"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        // setApplicationIconImage is unsafe in objc2 (it takes a raw
+        // image ref); the image we built is valid for the call's duration.
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)); }
+    }
+}
+
+/// Decode the app icon (the full-color Relay molecule) into an eframe
+/// IconData for the window / Dock icon, overriding eframe's default "e"
+/// logo. Returns None if decode fails — eframe then keeps its default.
+fn relay_icon() -> Option<std::sync::Arc<egui::IconData>> {
+    let img = image::load_from_memory(include_bytes!("../assets/app-icon.png"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(std::sync::Arc::new(egui::IconData { rgba: img.into_raw(), width, height }))
 }
 
 enum Stage {
