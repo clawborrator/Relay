@@ -26,6 +26,10 @@ relay install-task     # add to Task Scheduler / launchd
 relay uninstall-task
 relay task-status
 
+# Prerequisite management
+relay prereq-check              # report which of claude/node/npm/npx are found
+relay install-prereqs           # download + install missing prerequisites (user-space, no admin)
+
 # Unpair
 relay logout
 ```
@@ -41,10 +45,12 @@ Cargo 1.75+ required (workspace pins `rust-version = "1.75"`).
 | `main.rs` | CLI entry point (`relay`), WS daemon loop, reconnect with exponential backoff |
 | `oauth.rs` | **The key divergence from desktop_v1.** Device flow targets `shadows` app instead of GitHub. Polls `shadows /device/token`, gets back `{ access_token, hub_url }`. |
 | `auth.rs` | Token cache load/save; `~/.clawborrator/shadows-desktop.json` |
-| `gui.rs` | **Setup wizard** (egui/eframe, Windows + macOS). `run_setup_wizard(url, WizardMode)` — `WizardMode::FirstRun` offers install+start after pairing; `WizardMode::Repair` just refreshes the token for an already-running daemon. Sets the Relay molecule as the Dock/window icon. |
+| `gui.rs` | **Setup wizard** (egui/eframe, Windows + macOS). `run_setup_wizard(url, WizardMode)` — `WizardMode::FirstRun` offers install+start after pairing; `WizardMode::Repair` just refreshes the token. After pairing, shows a two-row prereq readout (Claude Code + Node.js) and an "Install prerequisites" button that runs the installer on a background thread, streaming progress into the UI. |
+| `prereq_install.rs` | Prerequisite auto-installer (all platforms, user-space). Downloads the latest Node LTS into `~/.clawborrator/node/` and runs the Claude Code install script. Invoked by the GUI wizard button and the `install-prereqs` CLI subcommand. |
 | `autostart/` | Platform-specific autostart: `windows.rs` (Task Scheduler "Relay"), macOS via `launchd` LaunchAgent (passes `--background` to skip the wizard). Linux: `relay.service` systemd-user unit. |
 | `build.rs` | Windows-only: embeds `assets/app-icon.ico` into `relay.exe` via `winresource`. No-op on macOS/Linux. |
 | `sessions.rs` | Session lifecycle, `SharingPolicy` (allowed_roots, max_concurrent_sessions) |
+| `main.rs` (`check_prereqs`) | Returns `Vec<Prereq>` — each entry has `name`, `path` (found location), and `hint` (platform-specific install one-liner). Searches the same augmented PATH that spawned sessions see (including `~/.clawborrator/node/bin`) so GUI-launched checks match reality. |
 | `spawn.rs` | `create_session`, `destroy_session`, `restart_session`, etc. + `sweep_orphan_scratch_dirs` |
 | `ipc.rs` | Per-install IPC socket (distinct from desktop_v1 — coexists on the same machine) |
 | `tray/` | System-tray icon (Windows + macOS) |
