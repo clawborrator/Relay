@@ -114,8 +114,8 @@ enum Msg {
     Failed(String),
 }
 
-/// Prereq-installer worker -> UI messages (macOS auto-install).
-#[cfg(target_os = "macos")]
+/// Prereq-installer worker -> UI messages (macOS + Windows auto-install).
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 enum InstallMsg {
     Progress(String),
     /// Finished; carries a fresh prereq check to repaint the readout.
@@ -133,10 +133,10 @@ struct Wizard {
     /// Runtime prereqs (claude + node/npm/npx), checked once on reaching
     /// the Paired stage. Empty until then.
     prereqs:        Vec<crate::Prereq>,
-    /// Prereq auto-installer state (macOS).
-    #[cfg(target_os = "macos")] prereq_rx:         Option<Receiver<InstallMsg>>,
-    #[cfg(target_os = "macos")] prereq_installing: bool,
-    #[cfg(target_os = "macos")] prereq_status:     Option<String>,
+    /// Prereq auto-installer state (macOS + Windows).
+    #[cfg(any(target_os = "windows", target_os = "macos"))] prereq_rx:         Option<Receiver<InstallMsg>>,
+    #[cfg(any(target_os = "windows", target_os = "macos"))] prereq_installing: bool,
+    #[cfg(any(target_os = "windows", target_os = "macos"))] prereq_status:     Option<String>,
 }
 
 impl Wizard {
@@ -144,16 +144,16 @@ impl Wizard {
         Self {
             mode, stage: Stage::EnterUrl, url_input: default_shadows_url,
             rx: None, busy: false, install_status: None, prereqs: Vec::new(),
-            #[cfg(target_os = "macos")] prereq_rx: None,
-            #[cfg(target_os = "macos")] prereq_installing: false,
-            #[cfg(target_os = "macos")] prereq_status: None,
+            #[cfg(any(target_os = "windows", target_os = "macos"))] prereq_rx: None,
+            #[cfg(any(target_os = "windows", target_os = "macos"))] prereq_installing: false,
+            #[cfg(any(target_os = "windows", target_os = "macos"))] prereq_status: None,
         }
     }
 
     /// Kick off the prereq auto-installer on a worker thread (its own
     /// current-thread tokio runtime), streaming progress back over a
     /// channel. macOS only.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn start_prereq_install(&mut self, ctx: &egui::Context) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.prereq_rx = Some(rx);
@@ -177,7 +177,7 @@ impl Wizard {
         });
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn drain_prereq(&mut self) {
         let msgs: Vec<InstallMsg> = match &self.prereq_rx {
             Some(rx) => rx.try_iter().collect(),
@@ -229,8 +229,8 @@ impl Wizard {
     }
 
     /// The "Install prerequisites" button + progress, shown under the
-    /// readout when something's missing (macOS auto-install).
-    #[cfg(target_os = "macos")]
+    /// readout when something's missing (macOS + Windows auto-install).
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn render_prereq_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if self.prereq_installing {
             let status = self.prereq_status.clone().unwrap_or_else(|| "Installing…".into());
@@ -340,12 +340,12 @@ fn install_and_run() -> Result<()> {
 impl eframe::App for Wizard {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         self.drain_prereq();
         // While a worker is running, poll the channel on a timer so the UI
         // advances even if the worker's repaint nudge is missed.
         let mut polling = self.busy;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         { polling |= self.prereq_installing; }
         if polling {
             ctx.request_repaint_after(Duration::from_millis(400));
@@ -393,7 +393,7 @@ impl eframe::App for Wizard {
                         ui.label("Paired. This machine is now connected to your shadows hub.");
                         ui.add_space(10.0);
                         self.render_prereqs(ui);
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
                         self.render_prereq_actions(ui, ctx);
                         ui.add_space(12.0);
                         ui.separator();
@@ -421,7 +421,7 @@ impl eframe::App for Wizard {
                         ui.label("Re-paired. Relay will reconnect with the new credentials shortly.");
                         ui.add_space(10.0);
                         self.render_prereqs(ui);
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
                         self.render_prereq_actions(ui, ctx);
                         ui.add_space(12.0);
                         if ui.button("Done").clicked() {

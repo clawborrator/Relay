@@ -9,9 +9,8 @@
 //   - Claude Code: its official install script (curl … | bash), which
 //     drops a native `claude` binary into ~/.local/bin.
 //
-// macOS + Linux only (the wizard runs on macOS; the CLI works on both).
-// Windows session-PATH augmentation isn't wired up yet, so the Windows
-// wizard keeps showing manual install hints.
+// All platforms. The wizard surfaces this on macOS + Windows; the CLI
+// (`install-prereqs`) works everywhere.
 
 use std::path::{Path, PathBuf};
 
@@ -22,10 +21,14 @@ pub(crate) fn managed_node_root(home: &Path) -> PathBuf {
     home.join(".clawborrator").join("node")
 }
 
-/// The `bin` dir of the managed Node — added to every session's PATH so
-/// node/npm/npx resolve there when nothing else provides them.
+/// The dir of the managed Node binaries, added to every session's PATH so
+/// node/npm/npx resolve there when nothing else provides them. The Windows
+/// `.zip` puts node.exe at the package root; unix tarballs use `bin/`.
 pub(crate) fn managed_node_bin_dir(home: &Path) -> PathBuf {
-    managed_node_root(home).join("bin")
+    #[cfg(windows)]
+    { managed_node_root(home) }
+    #[cfg(not(windows))]
+    { managed_node_root(home).join("bin") }
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -43,7 +46,9 @@ fn arch_tag() -> Result<&'static str> {
 }
 
 fn os_tag() -> &'static str {
-    if cfg!(target_os = "macos") { "darwin" } else { "linux" }
+    if cfg!(target_os = "macos") { "darwin" }
+    else if cfg!(target_os = "windows") { "win" }
+    else { "linux" }
 }
 
 /// Newest Node LTS version string (e.g. "v22.20.0") from the official
@@ -77,8 +82,10 @@ pub(crate) async fn install_node<F: Fn(&str)>(progress: &F) -> Result<()> {
     progress("Resolving the latest Node LTS…");
     let ver = latest_lts(&client).await?;
     let (os, arch) = (os_tag(), arch_tag()?);
+    // Windows ships a .zip (node.exe at the root); unix a .tar.gz (bin/).
+    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
     let name = format!("node-{ver}-{os}-{arch}");
-    let url = format!("https://nodejs.org/dist/{ver}/{name}.tar.gz");
+    let url = format!("https://nodejs.org/dist/{ver}/{name}.{ext}");
 
     progress(&format!("Downloading Node {ver} ({os}-{arch})…"));
     let bytes = client
@@ -86,7 +93,7 @@ pub(crate) async fn install_node<F: Fn(&str)>(progress: &F) -> Result<()> {
         .error_for_status().with_context(|| format!("downloading {url}"))?
         .bytes().await?;
 
-    let tmp = std::env::temp_dir().join(format!("{name}-{}.tar.gz", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("{name}-{}.{ext}", std::process::id()));
     std::fs::write(&tmp, &bytes).with_context(|| format!("writing {tmp:?}"))?;
 
     let root = managed_node_root(&home_dir()?);
@@ -95,10 +102,12 @@ pub(crate) async fn install_node<F: Fn(&str)>(progress: &F) -> Result<()> {
 
     progress("Extracting Node…");
     // --strip-components=1 drops the top-level `node-vX-os-arch/` dir, so
-    // the layout lands directly as <root>/bin, <root>/lib, etc. `tar`
-    // ships with macOS/Linux and auto-handles the gzip.
-    let out = std::process::Command::new("tar")
-        .arg("-xzf").arg(&tmp)
+    // the layout lands directly under <root>. `tar` ships with macOS,
+    // Linux, and Windows 10+ (bsdtar, which also reads .zip).
+    let mut tar = std::process::Command::new("tar");
+    if ext == "zip" { tar.arg("-xf"); } else { tar.arg("-xzf"); }
+    let out = tar
+        .arg(&tmp)
         .arg("--strip-components=1")
         .arg("-C").arg(&root)
         .output()
@@ -108,7 +117,8 @@ pub(crate) async fn install_node<F: Fn(&str)>(progress: &F) -> Result<()> {
         return Err(anyhow!("tar failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
 
-    let node_bin = managed_node_bin_dir(&home_dir()?).join("node");
+    let node_exe = if cfg!(windows) { "node.exe" } else { "node" };
+    let node_bin = managed_node_bin_dir(&home_dir()?).join(node_exe);
     if !node_bin.is_file() {
         return Err(anyhow!("Node binary missing after extract: {node_bin:?}"));
     }
@@ -116,9 +126,17 @@ pub(crate) async fn install_node<F: Fn(&str)>(progress: &F) -> Result<()> {
     Ok(())
 }
 
-/// Run Claude Code's official installer (user-space → ~/.local/bin).
+/// Run Claude Code's official installer (user-space). Unix uses the
+/// install.sh script; Windows uses the PowerShell bootstrap. Both are the
+/// vendor's documented one-liners.
 pub(crate) fn install_claude<F: Fn(&str)>(progress: &F) -> Result<()> {
     progress("Installing Claude Code…");
+    #[cfg(windows)]
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", "irm https://claude.ai/install.ps1 | iex"])
+        .output()
+        .context("running the Claude Code installer")?;
+    #[cfg(not(windows))]
     let out = std::process::Command::new("sh")
         .arg("-c")
         .arg("curl -fsSL https://claude.ai/install.sh | bash")
