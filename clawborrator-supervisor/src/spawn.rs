@@ -320,21 +320,10 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
     {
         if let Some(home) = std::env::var_os("HOME") {
             let home = std::path::PathBuf::from(home);
-            let mut prepend: Vec<std::path::PathBuf> = Vec::new();
-            prepend.push(home.join(".local").join("bin"));
-            #[cfg(target_os = "macos")]
-            {
-                prepend.push(std::path::PathBuf::from("/opt/homebrew/bin"));
-                prepend.push(std::path::PathBuf::from("/usr/local/bin"));
-            }
-            // Node version managers (nvm/fnm/volta/asdf) install node OUTSIDE
-            // the dirs above — only the user's interactive shell puts them on
-            // PATH. A daemon launched by launchd/Task Scheduler/Finder never
-            // sources that shell, so the spawned Claude Code session can't
-            // find `node`, and the clawborrator-mcp bridge (a node process)
-            // dies → the session never connects. Add the managers' node bins
-            // explicitly so node resolves regardless of how Relay was started.
-            prepend.extend(node_manager_bin_dirs(&home));
+            // The dirs Relay forces onto the session's PATH (Claude install
+            // dir, Homebrew, node version managers). Shared with the
+            // prereq-check so what it reports matches what sessions get.
+            let prepend = session_path_prepend_dirs(&home);
             let existing = std::env::var_os("PATH").unwrap_or_default();
             let mut new_path = std::ffi::OsString::new();
             for dir in prepend {
@@ -354,6 +343,22 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
     // the only reference that matters.
     drop(pty.slave);
     Ok((pty.master, child))
+}
+
+/// The directories Relay prepends to every spawned session's PATH:
+/// `~/.local/bin` (the official Claude installer's target), Homebrew on
+/// macOS, and any node version-manager bins. Sharing this with the
+/// prereq-check keeps "what we report" in sync with "what sessions get".
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn session_path_prepend_dirs(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![home.join(".local").join("bin")];
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+    }
+    dirs.extend(node_manager_bin_dirs(home));
+    dirs
 }
 
 /// `bin` directories of node version managers (nvm/fnm/volta/asdf),

@@ -25,7 +25,7 @@ use url::Url;
 use crate::oauth::{self, PollStep};
 
 const WIN_W: f32 = 500.0;
-const WIN_H: f32 = 380.0;
+const WIN_H: f32 = 460.0;
 
 /// First-run vs. re-pair. First-run offers to install + start the
 /// autostart entry after pairing; re-pair (machine deleted hub-side, the
@@ -121,11 +121,50 @@ struct Wizard {
     rx:             Option<Receiver<Msg>>,
     busy:           bool,
     install_status: Option<String>,
+    /// Runtime prereqs (claude + node/npm/npx), checked once on reaching
+    /// the Paired stage. Empty until then.
+    prereqs:        Vec<crate::Prereq>,
 }
 
 impl Wizard {
     fn new(default_shadows_url: String, mode: WizardMode) -> Self {
-        Self { mode, stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None }
+        Self { mode, stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None, prereqs: Vec::new() }
+    }
+
+    /// Two-line prereq readout (Claude Code + Node.js) shown after
+    /// pairing, with an install hint for whatever's missing. node/npm/npx
+    /// are collapsed into one "Node.js" row since they install together.
+    fn render_prereqs(&self, ui: &mut egui::Ui) {
+        let green = egui::Color32::from_rgb(60, 170, 90);
+        let red   = egui::Color32::from_rgb(200, 90, 60);
+        let row = |ui: &mut egui::Ui, ok: bool, label: &str| {
+            ui.horizontal(|ui| {
+                ui.colored_label(if ok { green } else { red }, if ok { "ready  " } else { "missing" });
+                ui.label(label);
+            });
+        };
+        let find = |name: &str| self.prereqs.iter().find(|p| p.name == name);
+        let claude_ok = find("claude").map(|p| p.found()).unwrap_or(false);
+        let node_ok   = self.prereqs.iter().filter(|p| p.name != "claude").all(|p| p.found());
+
+        ui.label("To run sessions, this machine also needs:");
+        ui.add_space(4.0);
+        row(ui, claude_ok, "Claude Code CLI");
+        if !claude_ok {
+            if let Some(p) = find("claude") {
+                ui.horizontal(|ui| { ui.add_space(20.0); ui.code(p.hint); });
+            }
+        }
+        row(ui, node_ok, "Node.js  (node, npm, npx)");
+        if !node_ok {
+            if let Some(p) = find("node") {
+                ui.horizontal(|ui| { ui.add_space(20.0); ui.code(p.hint); });
+            }
+        }
+        if !claude_ok || !node_ok {
+            ui.add_space(4.0);
+            ui.label("Install the missing ones, then start a session — Relay finds them automatically.");
+        }
     }
 
     fn start_pairing(&mut self, ctx: &egui::Context) {
@@ -154,7 +193,7 @@ impl Wizard {
         for m in drained {
             match m {
                 Msg::Prompt { user_code, pair_link } => self.stage = Stage::Pairing { user_code, pair_link },
-                Msg::Paired                          => { self.stage = Stage::Paired; self.busy = false; }
+                Msg::Paired                          => { self.prereqs = crate::check_prereqs(); self.stage = Stage::Paired; self.busy = false; }
                 Msg::Failed(e)                       => { self.stage = Stage::Failed(e); self.busy = false; }
             }
         }
@@ -264,7 +303,11 @@ impl eframe::App for Wizard {
                     // which brings the tray daemon up.
                     WizardMode::FirstRun => {
                         ui.label("Paired. This machine is now connected to your shadows hub.");
+                        ui.add_space(10.0);
+                        self.render_prereqs(ui);
                         ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
                         ui.label("Install the background task so Relay starts at logon and runs in the tray:");
                         ui.add_space(10.0);
                         if ui.button("Install and start background task").clicked() {
@@ -286,6 +329,8 @@ impl eframe::App for Wizard {
                     // install — just confirm and let the user close.
                     WizardMode::Repair => {
                         ui.label("Re-paired. Relay will reconnect with the new credentials shortly.");
+                        ui.add_space(10.0);
+                        self.render_prereqs(ui);
                         ui.add_space(12.0);
                         if ui.button("Done").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
