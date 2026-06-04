@@ -358,6 +358,9 @@ pub(crate) fn session_path_prepend_dirs(home: &std::path::Path) -> Vec<std::path
         dirs.push(std::path::PathBuf::from("/usr/local/bin"));
     }
     dirs.extend(node_manager_bin_dirs(home));
+    // Relay-managed Node (installed by the wizard / `install-prereqs`).
+    // Last, so a user's own node — system or version-manager — still wins.
+    dirs.push(crate::prereq_install::managed_node_bin_dir(home));
     dirs
 }
 

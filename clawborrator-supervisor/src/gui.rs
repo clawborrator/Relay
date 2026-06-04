@@ -114,6 +114,15 @@ enum Msg {
     Failed(String),
 }
 
+/// Prereq-installer worker -> UI messages (macOS auto-install).
+#[cfg(target_os = "macos")]
+enum InstallMsg {
+    Progress(String),
+    /// Finished; carries a fresh prereq check to repaint the readout.
+    Done(Vec<crate::Prereq>),
+    Failed(String),
+}
+
 struct Wizard {
     mode:           WizardMode,
     stage:          Stage,
@@ -124,11 +133,63 @@ struct Wizard {
     /// Runtime prereqs (claude + node/npm/npx), checked once on reaching
     /// the Paired stage. Empty until then.
     prereqs:        Vec<crate::Prereq>,
+    /// Prereq auto-installer state (macOS).
+    #[cfg(target_os = "macos")] prereq_rx:         Option<Receiver<InstallMsg>>,
+    #[cfg(target_os = "macos")] prereq_installing: bool,
+    #[cfg(target_os = "macos")] prereq_status:     Option<String>,
 }
 
 impl Wizard {
     fn new(default_shadows_url: String, mode: WizardMode) -> Self {
-        Self { mode, stage: Stage::EnterUrl, url_input: default_shadows_url, rx: None, busy: false, install_status: None, prereqs: Vec::new() }
+        Self {
+            mode, stage: Stage::EnterUrl, url_input: default_shadows_url,
+            rx: None, busy: false, install_status: None, prereqs: Vec::new(),
+            #[cfg(target_os = "macos")] prereq_rx: None,
+            #[cfg(target_os = "macos")] prereq_installing: false,
+            #[cfg(target_os = "macos")] prereq_status: None,
+        }
+    }
+
+    /// Kick off the prereq auto-installer on a worker thread (its own
+    /// current-thread tokio runtime), streaming progress back over a
+    /// channel. macOS only.
+    #[cfg(target_os = "macos")]
+    fn start_prereq_install(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.prereq_rx = Some(rx);
+        self.prereq_installing = true;
+        self.prereq_status = Some("Starting…".into());
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => { let _ = tx.send(InstallMsg::Failed(format!("{e}"))); ctx.request_repaint(); return; }
+            };
+            let txp = tx.clone();
+            let res = rt.block_on(crate::prereq_install::install_missing(move |m| {
+                let _ = txp.send(InstallMsg::Progress(m.to_string()));
+            }));
+            match res {
+                Ok(())  => { let _ = tx.send(InstallMsg::Done(crate::check_prereqs())); }
+                Err(e)  => { let _ = tx.send(InstallMsg::Failed(format!("{e:#}"))); }
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn drain_prereq(&mut self) {
+        let msgs: Vec<InstallMsg> = match &self.prereq_rx {
+            Some(rx) => rx.try_iter().collect(),
+            None => return,
+        };
+        for m in msgs {
+            match m {
+                InstallMsg::Progress(s) => self.prereq_status = Some(s),
+                InstallMsg::Done(p)     => { self.prereqs = p; self.prereq_installing = false; self.prereq_status = Some("Prerequisites installed.".into()); }
+                InstallMsg::Failed(e)   => { self.prereq_installing = false; self.prereq_status = Some(format!("Install failed: {e}")); }
+            }
+        }
     }
 
     /// Two-line prereq readout (Claude Code + Node.js) shown after
@@ -164,6 +225,28 @@ impl Wizard {
         if !claude_ok || !node_ok {
             ui.add_space(4.0);
             ui.label("Install the missing ones, then start a session — Relay finds them automatically.");
+        }
+    }
+
+    /// The "Install prerequisites" button + progress, shown under the
+    /// readout when something's missing (macOS auto-install).
+    #[cfg(target_os = "macos")]
+    fn render_prereq_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.prereq_installing {
+            let status = self.prereq_status.clone().unwrap_or_else(|| "Installing…".into());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| { ui.spinner(); ui.label(status); });
+            return;
+        }
+        if self.prereqs.iter().any(|p| !p.found()) {
+            ui.add_space(8.0);
+            if ui.button("Install prerequisites").clicked() {
+                self.start_prereq_install(ctx);
+            }
+        }
+        if let Some(s) = self.prereq_status.clone() {
+            ui.add_space(4.0);
+            ui.label(s);
         }
     }
 
@@ -257,9 +340,14 @@ fn install_and_run() -> Result<()> {
 impl eframe::App for Wizard {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain();
-        // While pairing, poll the channel on a timer so the UI advances
-        // even if the worker's repaint nudge is missed.
-        if self.busy {
+        #[cfg(target_os = "macos")]
+        self.drain_prereq();
+        // While a worker is running, poll the channel on a timer so the UI
+        // advances even if the worker's repaint nudge is missed.
+        let mut polling = self.busy;
+        #[cfg(target_os = "macos")]
+        { polling |= self.prereq_installing; }
+        if polling {
             ctx.request_repaint_after(Duration::from_millis(400));
         }
 
@@ -305,6 +393,8 @@ impl eframe::App for Wizard {
                         ui.label("Paired. This machine is now connected to your shadows hub.");
                         ui.add_space(10.0);
                         self.render_prereqs(ui);
+                        #[cfg(target_os = "macos")]
+                        self.render_prereq_actions(ui, ctx);
                         ui.add_space(12.0);
                         ui.separator();
                         ui.add_space(8.0);
@@ -331,6 +421,8 @@ impl eframe::App for Wizard {
                         ui.label("Re-paired. Relay will reconnect with the new credentials shortly.");
                         ui.add_space(10.0);
                         self.render_prereqs(ui);
+                        #[cfg(target_os = "macos")]
+                        self.render_prereq_actions(ui, ctx);
                         ui.add_space(12.0);
                         if ui.button("Done").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
