@@ -308,33 +308,21 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
     cmd.env("TERM",      "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     // Ensure the dirs the Claude Code / Node installers drop binaries
-    // into are on the spawned CC process's PATH. The official Claude
-    // installer (curl … claude.ai/install.sh) puts `claude` in
-    // $HOME/.local/bin; on macOS, Homebrew puts node/npm/npx in
-    // /opt/homebrew/bin (Apple Silicon) or /usr/local/bin (Intel).
-    // The OS autostart entry (systemd unit / launchd plist) sets PATH
-    // explicitly to cover this — this runtime prepend is belt-and-
-    // suspenders for daemons run outside that entry (cargo run, manual
-    // invocation) or installed before the entry's PATH template existed.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            let home = std::path::PathBuf::from(home);
-            // The dirs Relay forces onto the session's PATH (Claude install
-            // dir, Homebrew, node version managers). Shared with the
-            // prereq-check so what it reports matches what sessions get.
-            let prepend = session_path_prepend_dirs(&home);
-            let existing = std::env::var_os("PATH").unwrap_or_default();
-            let mut new_path = std::ffi::OsString::new();
-            for dir in prepend {
-                if !new_path.is_empty() { new_path.push(":"); }
-                new_path.push(dir);
-            }
-            if !existing.is_empty() {
-                if !new_path.is_empty() { new_path.push(":"); }
-                new_path.push(&existing);
-            }
-            cmd.env("PATH", new_path);
+    // into are on the spawned CC process's PATH — including Relay's own
+    // managed Node (~/.clawborrator/node). The official Claude installer
+    // puts `claude` in $HOME/.local/bin; on macOS Homebrew puts node in
+    // /opt/homebrew/bin. The OS autostart entry sets PATH too, but this
+    // runtime prepend is belt-and-suspenders for daemons run outside it
+    // (manual launch, or installed before the managed Node existed).
+    // join_paths uses the platform separator (':' unix, ';' Windows).
+    if let Some(home) = dirs::home_dir() {
+        let mut dirs = session_path_prepend_dirs(&home);
+        if let Some(existing) = std::env::var_os("PATH") {
+            dirs.extend(std::env::split_paths(&existing));
+        }
+        match std::env::join_paths(&dirs) {
+            Ok(joined) => { cmd.env("PATH", joined); }
+            Err(e)     => warn!(error = %e, "could not build session PATH; using inherited"),
         }
     }
     let child = pty.slave.spawn_command(cmd)
@@ -349,7 +337,6 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
 /// `~/.local/bin` (the official Claude installer's target), Homebrew on
 /// macOS, and any node version-manager bins. Sharing this with the
 /// prereq-check keeps "what we report" in sync with "what sessions get".
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn session_path_prepend_dirs(home: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut dirs = vec![home.join(".local").join("bin")];
     #[cfg(target_os = "macos")]
@@ -357,6 +344,7 @@ pub(crate) fn session_path_prepend_dirs(home: &std::path::Path) -> Vec<std::path
         dirs.push(std::path::PathBuf::from("/opt/homebrew/bin"));
         dirs.push(std::path::PathBuf::from("/usr/local/bin"));
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     dirs.extend(node_manager_bin_dirs(home));
     // Relay-managed Node (installed by the wizard / `install-prereqs`).
     // Last, so a user's own node — system or version-manager — still wins.

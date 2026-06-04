@@ -37,7 +37,7 @@ mod status;
 mod token_usage;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod gui;
-#[cfg(any(target_os = "macos", target_os = "linux"))] mod prereq_install;
+mod prereq_install;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -948,17 +948,11 @@ pub(crate) fn check_prereqs() -> Vec<Prereq> {
 
 /// `install-prereqs` — download + install whatever the prereq check is
 /// missing (Relay-managed Node + Claude Code), then re-run the check.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn cmd_install_prereqs() -> Result<()> {
     eprintln!("Installing missing prerequisites…");
     prereq_install::install_missing(|m| eprintln!("  {m}")).await?;
     eprintln!();
     prereq_check()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-async fn cmd_install_prereqs() -> Result<()> {
-    anyhow::bail!("install-prereqs is not supported on this platform yet");
 }
 
 fn prereq_check() -> Result<()> {
@@ -990,12 +984,11 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     // Also search the dirs Relay forces onto a spawned session's PATH
-    // (~/.local/bin, Homebrew, nvm/fnm/volta/asdf), so the check matches
-    // what sessions actually see — even when run from a minimal-PATH GUI
-    // context (the setup wizard) that never sourced the user's shell.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Some(home) = std::env::var_os("HOME") {
-        for dir in crate::spawn::session_path_prepend_dirs(&PathBuf::from(home)) {
+    // (~/.local/bin, Homebrew, nvm/fnm/volta/asdf, the managed Node), so
+    // the check matches what sessions actually see — even when run from a
+    // minimal-PATH GUI context (the setup wizard).
+    if let Some(home) = dirs::home_dir() {
+        for dir in crate::spawn::session_path_prepend_dirs(&home) {
             if !paths.contains(&dir) {
                 paths.push(dir);
             }
