@@ -37,6 +37,7 @@ mod status;
 mod token_usage;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod gui;
+#[cfg(any(target_os = "macos", target_os = "linux"))] mod prereq_install;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -179,6 +180,11 @@ enum Command {
     /// out about missing tools without having to interpret the
     /// `502: spawning claude` error from orchard.
     PrereqCheck,
+    /// Download + install any missing session prerequisites: a
+    /// Relay-managed Node (into ~/.clawborrator/node) and Claude Code
+    /// (its official installer → ~/.local/bin). User-space, no admin.
+    /// macOS/Linux only. Re-runs the prereq check at the end.
+    InstallPrereqs,
     /// List the Claude Code sessions this machine's daemon is
     /// currently managing. Talks to the running daemon over its local
     /// IPC socket.
@@ -863,6 +869,7 @@ async fn run_subcommand(cli: &Cli, cmd: Command) -> Result<()> {
         Command::UninstallTask   => uninstall_task(provider),
         Command::TaskStatus      => task_status(provider),
         Command::PrereqCheck     => prereq_check(),
+        Command::InstallPrereqs  => cmd_install_prereqs().await,
         Command::Sessions        => cmd_sessions().await,
         Command::Attach { session_id }               => ipc::client_attach(session_id).await,
         Command::End { session_id }                  => cmd_end(session_id).await,
@@ -937,6 +944,21 @@ pub(crate) fn check_prereqs() -> Vec<Prereq> {
         .into_iter()
         .map(|(name, hint)| Prereq { name, path: find_on_path(name), hint })
         .collect()
+}
+
+/// `install-prereqs` — download + install whatever the prereq check is
+/// missing (Relay-managed Node + Claude Code), then re-run the check.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn cmd_install_prereqs() -> Result<()> {
+    eprintln!("Installing missing prerequisites…");
+    prereq_install::install_missing(|m| eprintln!("  {m}")).await?;
+    eprintln!();
+    prereq_check()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn cmd_install_prereqs() -> Result<()> {
+    anyhow::bail!("install-prereqs is not supported on this platform yet");
 }
 
 fn prereq_check() -> Result<()> {

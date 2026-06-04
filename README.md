@@ -88,6 +88,7 @@ relay attach <id>                 # attach a terminal to a session (Ctrl-] to de
 relay end <id>                    # kill a session
 relay new <folder>                # start a session locally
 relay prereq-check                # verify claude + node/npm/npx are reachable
+relay install-prereqs             # download + install missing prereqs (macOS/Linux)
 ```
 
 Global flags (`--shadows-url`, `--hub-url`, `--pat`, `--machine-id`) work
@@ -100,14 +101,29 @@ revoked), the menu-bar / tray menu has **"Re-pair this machine…"**. It
 re-runs the pairing flow; the running daemon adopts the fresh token on
 its next reconnect — no restart needed.
 
-## Node requirement
+## Prerequisites
 
-Sessions run Claude Code, which launches the `clawborrator-mcp` bridge
-via Node. Relay adds the usual Node locations to each session's PATH —
-`~/.local/bin`, Homebrew, and node version managers (nvm / fnm / volta /
-asdf) — so Node is found even when Relay is started by the OS at login
-(which doesn't source your shell). Run `relay prereq-check` to confirm
-`claude` and `node`/`npm`/`npx` are visible.
+Running a session needs two things on the machine (Relay itself needs
+neither — only session creation does):
+
+- **Claude Code** (`claude`) — Relay spawns it directly.
+- **Node.js** (`node`/`npm`/`npx`) — the `clawborrator-mcp` bridge runs
+  via `npx`.
+
+On macOS, the setup wizard checks for both right after pairing and offers
+an **Install prerequisites** button that installs whatever's missing — a
+Relay-managed Node into `~/.clawborrator/node` and Claude Code via its
+official installer. No admin password needed. Headless equivalents:
+
+```
+relay install-prereqs    # download + install missing prereqs (macOS/Linux)
+relay prereq-check        # just report what's present/missing
+```
+
+Relay also adds the usual Node locations to each session's PATH
+(`~/.local/bin`, Homebrew, nvm/fnm/volta/asdf, and its managed Node), so
+Node is found even when Relay is started by the OS at login (which
+doesn't source your shell).
 
 ## Config
 
