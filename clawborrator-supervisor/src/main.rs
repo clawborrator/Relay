@@ -905,42 +905,57 @@ async fn cmd_new(folder: String, routing_name: Option<String>, flags: Vec<String
     Ok(())
 }
 
+/// One runtime prerequisite for spawning Claude Code sessions, and where
+/// (if anywhere) it was found on the session PATH.
+pub(crate) struct Prereq {
+    pub name: &'static str,
+    pub path: Option<PathBuf>,
+    /// Short, platform-appropriate install hint shown when missing.
+    pub hint: &'static str,
+}
+
+impl Prereq {
+    pub fn found(&self) -> bool { self.path.is_some() }
+}
+
+/// Check the tools a spawned session needs: the `claude` CLI and
+/// node/npm/npx (the clawborrator-mcp bridge is a Node process). Searches
+/// the SAME augmented PATH `spawn.rs` gives sessions, so a GUI-launched
+/// check (the setup wizard) doesn't falsely report node missing when it's
+/// installed via nvm/Homebrew/etc. Relay itself needs none of these — only
+/// session creation does.
+pub(crate) fn check_prereqs() -> Vec<Prereq> {
+    const HINT_CLAUDE: &str = "curl -fsSL https://claude.ai/install.sh | bash";
+    #[cfg(target_os = "macos")]
+    const HINT_NODE: &str = "brew install node  (or nvm, or nodejs.org)";
+    #[cfg(target_os = "windows")]
+    const HINT_NODE: &str = "install Node.js from nodejs.org";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    const HINT_NODE: &str = "sudo apt install -y nodejs npm  (or your distro's package)";
+
+    [("claude", HINT_CLAUDE), ("node", HINT_NODE), ("npm", HINT_NODE), ("npx", HINT_NODE)]
+        .into_iter()
+        .map(|(name, hint)| Prereq { name, path: find_on_path(name), hint })
+        .collect()
+}
+
 fn prereq_check() -> Result<()> {
-    // Search PATH for each tool. On Linux we ALSO check $HOME/.local/bin
-    // explicitly since that's where the official Claude installer drops
-    // the binary, and where ad-hoc npm installs land for users that
-    // configure `prefix=~/.local`. spawn_cc + the install-task unit
-    // template both prepend ~/.local/bin to PATH, so a prereq-check
-    // that fails to find tools there would falsely report missing.
-    let mut missing = Vec::new();
-    let mut found = Vec::new();
-    for (name, install_hint) in [
-        ("claude", "curl -fsSL https://claude.ai/install.sh | bash"),
-        ("npx",    "sudo apt install -y nodejs npm   # or dnf on fedora/rhel"),
-        ("npm",    "sudo apt install -y nodejs npm"),
-        ("node",   "sudo apt install -y nodejs"),
-    ] {
-        if let Some(path) = find_on_path(name) {
-            found.push((name, path));
-        } else {
-            missing.push((name, install_hint));
-        }
-    }
+    let results = check_prereqs();
     eprintln!("Runtime prerequisite check:");
     eprintln!();
-    for (name, path) in &found {
-        eprintln!("  [ok]      {name:<8}  {}", path.display());
-    }
-    for (name, hint) in &missing {
-        eprintln!("  [missing] {name:<8}  install: {hint}");
+    for p in &results {
+        match &p.path {
+            Some(path) => eprintln!("  [ok]      {:<8}  {}", p.name, path.display()),
+            None       => eprintln!("  [missing] {:<8}  install: {}", p.name, p.hint),
+        }
     }
     eprintln!();
-    if missing.is_empty() {
+    let missing = results.iter().filter(|p| !p.found()).count();
+    if missing == 0 {
         eprintln!("All prereqs present. Session creation through orchard should work.");
         Ok(())
     } else {
-        eprintln!("{} missing prereq(s). Install them, then re-run this check.", missing.len());
-        eprintln!("(If you install npm-global tools to ~/.npm-global/bin/, also add that path to the supervisor's systemd unit Environment= line, OR install via sudo so they land in /usr/local/bin/.)");
+        eprintln!("{missing} missing prereq(s). Install them, then re-run this check.");
         std::process::exit(1);
     }
 }
@@ -952,10 +967,16 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    // Also search the dirs Relay forces onto a spawned session's PATH
+    // (~/.local/bin, Homebrew, nvm/fnm/volta/asdf), so the check matches
+    // what sessions actually see — even when run from a minimal-PATH GUI
+    // context (the setup wizard) that never sourced the user's shell.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(home) = std::env::var_os("HOME") {
-        let local_bin = PathBuf::from(home).join(".local").join("bin");
-        if !paths.iter().any(|p| p == &local_bin) {
-            paths.push(local_bin);
+        for dir in crate::spawn::session_path_prepend_dirs(&PathBuf::from(home)) {
+            if !paths.contains(&dir) {
+                paths.push(dir);
+            }
         }
     }
     // Try the bare name, plus .exe on Windows.
