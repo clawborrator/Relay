@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-**Relay** (`shadows-desktop` crate, v0.3.0) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
+**Relay** (`shadows-desktop` crate, v0.3.1) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
 
 Fork of `desktop_v1` (`clawborrator-supervisor`). The only behavioral difference is authentication: instead of pairing against the hub's GitHub OAuth, it pairs against the **shadows app** (Google/Zoho SSO). Shadows brokers a hub token for the user's shadow principal. Everything downstream (the `/supervisor` WebSocket, session spawn/kill/restart, channel-token plumbing) is unchanged from desktop_v1.
 
