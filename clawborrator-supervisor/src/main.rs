@@ -34,6 +34,7 @@ mod parser_plugins;
 mod sessions;
 mod spawn;
 mod status;
+mod statusline;
 mod token_usage;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod gui;
@@ -200,6 +201,14 @@ enum Command {
     End {
         /// Session id (from `sessions`).
         session_id: String,
+    },
+    /// Internal: Claude Code's statusLine command for managed sessions.
+    /// Saves the status JSON to `--out` for the usage reporter, then
+    /// prints the user's own status line (or a compact default).
+    #[command(hide = true)]
+    Statusline {
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Start a new managed Claude Code session in a folder.
     New {
@@ -874,6 +883,10 @@ async fn run_subcommand(cli: &Cli, cmd: Command) -> Result<()> {
         Command::Attach { session_id }               => ipc::client_attach(session_id).await,
         Command::End { session_id }                  => cmd_end(session_id).await,
         Command::New { folder, routing_name, flags } => cmd_new(folder, routing_name, flags).await,
+        Command::Statusline { out } => {
+            statusline::run_statusline(&out);
+            Ok(())
+        }
     }
 }
 
@@ -1154,6 +1167,23 @@ pub(crate) async fn run_daemon(
         });
     }
 
+    // Real plan usage (from CC's status line) → the shadows app we paired
+    // with. Needs the pairing URL; installs paired before it was recorded
+    // simply don't report.
+    // Credentials are re-read from the config file each report so a re-pair
+    // (repair wizard) is picked up without restarting the daemon.
+    if cfg.shadows_url.is_none() {
+        info!("no shadows_url in config yet; usage reporting starts once paired against a shadows app");
+    }
+    statusline::spawn_usage_reporter(mgr.clone(), statusline::ReporterConfig {
+        creds: Arc::new(|| {
+            let c = load_or_init_config().ok()?;
+            Some((c.shadows_url?, c.token?))
+        }),
+        machine_id:     cfg.machine_id.clone(),
+        daemon_version: DAEMON_VERSION,
+    });
+
     let ctx = DaemonCtx {
         hub_url:    hub.clone(),
         pat:        token,
@@ -1239,6 +1269,13 @@ fn main() -> Result<()> {
     attach_parent_console_if_any();
 
     let mut cli = Cli::parse();
+
+    // Status-line hook: runs on every CC status update, so keep it on the
+    // fast path — no tokio runtime, no logging, never an error exit.
+    if let Some(Command::Statusline { out }) = &cli.command {
+        statusline::run_statusline(out);
+        return Ok(());
+    }
 
     // Subcommand path — short-lived, console-driven. tokio on the
     // main thread is fine because there's no tray to run there.

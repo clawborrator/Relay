@@ -229,6 +229,25 @@ impl SessionManager {
     }
 }
 
+impl SessionManager {
+    /// (hub session id, scratch dir) for every session whose Claude Code
+    /// process is still running — the usage reporter reads each one's
+    /// statusline.json. Exited sessions are skipped so their last snapshot
+    /// isn't re-sent as if it were current.
+    pub fn list_session_scratch_dirs(&self) -> Vec<(String, std::path::PathBuf)> {
+        let map = self.inner.lock().unwrap();
+        let mut out = Vec::with_capacity(map.len());
+        for (sid, entry) in map.iter() {
+            if let Ok(mut s) = entry.lock() {
+                if matches!(s.child.try_wait(), Ok(None)) {
+                    out.push((sid.clone(), s.scratch_dir.clone()));
+                }
+            }
+        }
+        out
+    }
+}
+
 pub fn fresh_pty_size() -> PtySize {
     PtySize { rows: PTY_ROWS, cols: PTY_COLS, pixel_width: 0, pixel_height: 0 }
 }
