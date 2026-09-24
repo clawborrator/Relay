@@ -273,6 +273,27 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
     // create / soft-restart / respawn.
     cmd.arg("--session-id");
     cmd.arg(cc_session_id);
+    // Route CC's status line through `relay statusline` so the daemon can
+    // forward real plan usage (rate limits, model, context) to the shadows
+    // app. The user's own statusLine still renders (passthrough). Skipped
+    // when the operator passes their own --settings.
+    let operator_settings = extra_flags.iter().any(|f| f == "--settings" || f.starts_with("--settings="));
+    // A soft restart reuses the scratch dir: drop the previous incarnation's
+    // snapshot so it isn't reported as this process's state.
+    if let Some(scratch) = mcp_path.parent() {
+        let _ = std::fs::remove_file(scratch.join(crate::statusline::STATUSLINE_FILE));
+    }
+    if !operator_settings {
+        if let Some(scratch) = mcp_path.parent() {
+            match crate::statusline::write_settings(scratch) {
+                Ok(p) => {
+                    cmd.arg("--settings");
+                    cmd.arg(p.as_os_str());
+                }
+                Err(e) => warn!(error = %e, "could not write relay statusline settings; usage limits won't be reported"),
+            }
+        }
+    }
     // Operator-supplied extra flags. Appended last so they can
     // override our defaults if needed (CC's CLI takes the last
     // value when a flag repeats). One argv slot per entry —
