@@ -82,6 +82,7 @@ impl Updater {
         std::thread::spawn(move || match block_on(latest_release()) {
             Ok(Some(r)) if is_newer(&r.version, CURRENT) => {
                 info!(latest = %r.version, current = CURRENT, "Relay update available");
+                notify_once(&r.version);
                 me.set(Phase::Available(r));
             }
             Ok(_) => me.set(Phase::UpToDate),
@@ -125,6 +126,54 @@ impl Updater {
         });
     }
 }
+
+/// A desktop notification the first time this machine sees `version`
+/// (remembered across restarts), so an update doesn't wait for someone to
+/// open the menu. macOS + Windows; Linux just has the log line.
+fn notify_once(version: &str) {
+    let Some(marker) = dirs::home_dir().map(|h| h.join(".clawborrator").join("relay-update-notified")) else { return };
+    if std::fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
+        return;
+    }
+    let _ = std::fs::write(&marker, version);
+    let title = format!("Relay {version} is available");
+    let body = format!("Choose \"Update to Relay {version}\" in the Relay menu. It restarts Relay; running sessions come back on their own.");
+    show_notification(&title, &body);
+}
+
+#[cfg(target_os = "macos")]
+fn show_notification(title: &str, body: &str) {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!("display notification \"{}\" with title \"{}\"", esc(body), esc(title));
+    if let Err(e) = std::process::Command::new("osascript").arg("-e").arg(script).spawn() {
+        warn!(error = %e, "could not show the update notification");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_notification(title: &str, body: &str) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let esc = |s: &str| s.replace('\'', "''").replace('"', "");
+    let ps = format!(
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
+         $n = New-Object System.Windows.Forms.NotifyIcon; \
+         $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; \
+         $n.ShowBalloonTip(10000, '{}', '{}', 'Info'); Start-Sleep -Seconds 11; $n.Dispose()",
+        esc(title),
+        esc(body)
+    );
+    if let Err(e) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    {
+        warn!(error = %e, "could not show the update notification");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn show_notification(_title: &str, _body: &str) {}
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
