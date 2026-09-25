@@ -270,6 +270,10 @@ pub struct SessionUsage {
     pub five_hour: Option<Window>,
     pub seven_day: Option<Window>,
     pub session_cost_usd: Option<f64>,
+    /// Claude Code's conversation id for this incarnation, so the shadows
+    /// app can resume the session in place later.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cc_session_id: Option<String>,
 }
 
 fn window(v: &Value, key: &str) -> Option<Window> {
@@ -285,6 +289,7 @@ pub fn extract_usage(hub_session_id: &str, raw: &str) -> Option<SessionUsage> {
     let v: Value = serde_json::from_str(raw).ok()?;
     Some(SessionUsage {
         hub_session_id: hub_session_id.to_string(),
+        cc_session_id: v.get("session_id").and_then(Value::as_str).map(str::to_string),
         model_id: v.pointer("/model/id").and_then(Value::as_str).map(str::to_string),
         model_name: v.pointer("/model/display_name").and_then(Value::as_str).map(str::to_string),
         context_used_percentage: v.pointer("/context_window/used_percentage").and_then(Value::as_f64),
@@ -397,6 +402,7 @@ mod tests {
         assert_eq!(u.model_id.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(u.context_used_percentage, Some(34.5));
         assert_eq!(u.context_window_size, Some(1_000_000));
+        assert_eq!(u.cc_session_id.as_deref(), Some("cc-1"));
         assert_eq!(u.five_hour.as_ref().unwrap().used_percentage, 12.0);
         assert_eq!(u.seven_day.as_ref().unwrap().resets_at, Some(serde_json::json!(1790500000)));
         let json = serde_json::to_string(&u).unwrap();

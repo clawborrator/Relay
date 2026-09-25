@@ -334,6 +334,185 @@ pub fn spawn_conversation_reporter(mgr: Arc<SessionManager>, cfg: ReporterConfig
     });
 }
 
+// ---------- history upload on resume ----------
+
+const HISTORY_MAX_ITEMS: usize = 400;
+const HISTORY_TEXT_MAX: usize = 20_000;
+const HISTORY_INPUT_MAX: usize = 8_000;
+const HISTORY_MAX_FILE: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HistoryItem {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// The conversation id in `--resume <id>` / `--resume=<id>` / `-r <id>`.
+pub fn resume_source(flags: &[String]) -> Option<String> {
+    let mut it = flags.iter();
+    while let Some(f) = it.next() {
+        let id = if f == "--resume" || f == "-r" {
+            it.next().cloned()
+        } else {
+            f.strip_prefix("--resume=").map(str::to_string)
+        };
+        if let Some(id) = id {
+            if uuid::Uuid::parse_str(&id).is_ok() {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// `<config>/projects/*/<id>.jsonl`
+fn find_transcript(root: &Path, id: &str) -> Option<PathBuf> {
+    let name = format!("{id}.jsonl");
+    std::fs::read_dir(root.join("projects")).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.is_file())
+}
+
+/// The visible conversation: typed prompts, Claude's replies and tool calls
+/// (name + input). Tool results, attachments and sidechains are left out.
+pub fn history_items(path: &Path) -> Vec<HistoryItem> {
+    let mut out: Vec<HistoryItem> = Vec::new();
+    let Ok(f) = std::fs::File::open(path) else { return out };
+    let mut reader = BufReader::with_capacity(64 * 1024, f.take(HISTORY_MAX_FILE));
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if buf.len() > 4 * MAX_LINE {
+            continue;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        let Ok(d) = serde_json::from_str::<Value>(&line) else { continue };
+        if d.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let at = d.get("timestamp").and_then(Value::as_str).map(str::to_string);
+        match d.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                if let Some(text) = prompt_full_text(&d) {
+                    out.push(HistoryItem { kind: "user", text: Some(clip(&text, HISTORY_TEXT_MAX)), tool: None, input: None, at });
+                }
+            }
+            Some("assistant") => {
+                let Some(Value::Array(parts)) = d.pointer("/message/content") else { continue };
+                for p in parts {
+                    match p.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            let t = p.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                            if !t.is_empty() {
+                                out.push(HistoryItem { kind: "claude", text: Some(clip(t, HISTORY_TEXT_MAX)), tool: None, input: None, at: at.clone() });
+                            }
+                        }
+                        Some("tool_use") => {
+                            let name = p.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                            if name.is_empty() {
+                                continue;
+                            }
+                            let input = p.get("input").map(|v| clip(&v.to_string(), HISTORY_INPUT_MAX));
+                            out.push(HistoryItem { kind: "tool", text: None, tool: Some(name), input, at: at.clone() });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if out.len() > HISTORY_MAX_ITEMS {
+        out.drain(..out.len() - HISTORY_MAX_ITEMS);
+    }
+    out
+}
+
+/// Like `prompt_text`, but the whole prompt rather than a one-line title.
+fn prompt_full_text(d: &Value) -> Option<String> {
+    let content = d.pointer("/message/content")?;
+    let text = match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|p| p.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let is_channel = text.trim_start().starts_with("<channel");
+    if d.get("isMeta").and_then(Value::as_bool) == Some(true) && !is_channel {
+        return None;
+    }
+    let t = unwrap_channel(text.trim());
+    if t.is_empty() || t.starts_with('<') {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryUpload<'a> {
+    machine_id: &'a str,
+    hub_session_id: &'a str,
+    source_session_id: &'a str,
+    items: &'a [HistoryItem],
+}
+
+/// After a `--resume` spawn: send the resumed conversation's earlier history
+/// to `<shadows_url>/api/relay/history` so the new session shows it. The
+/// local session row may not exist yet when this runs, so a 404 is retried.
+pub async fn upload_history(shadows_url: String, token: String, machine_id: String, hub_session_id: String, source: String) {
+    if disabled() {
+        return;
+    }
+    let Some(root) = claude_config_dir() else { return };
+    let src = source.clone();
+    let items = match tokio::task::spawn_blocking(move || find_transcript(&root, &src).map(|p| history_items(&p))).await {
+        Ok(Some(items)) if !items.is_empty() => items,
+        _ => return,
+    };
+    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(60)).build() else { return };
+    let url = format!("{}/api/relay/history", shadows_url.trim_end_matches('/'));
+    let body = HistoryUpload { machine_id: &machine_id, hub_session_id: &hub_session_id, source_session_id: &source, items: &items };
+    for attempt in 0..10u32 {
+        tokio::time::sleep(Duration::from_secs(if attempt == 0 { 5 } else { 10 })).await;
+        match client.post(&url).bearer_auth(&token).json(&body).send().await {
+            Ok(r) if r.status().is_success() => {
+                info!(items = items.len(), "resumed conversation history uploaded");
+                return;
+            }
+            Ok(r) if r.status().as_u16() == 404 => continue,
+            Ok(r) => {
+                warn!(status = %r.status(), "history upload rejected");
+                return;
+            }
+            Err(e) => warn!(error = %e, "history upload failed"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +599,37 @@ mod tests {
     }
 
     #[test]
+    fn history_keeps_prompts_replies_and_tools_only() {
+        let dir = std::env::temp_dir().join(format!("relay-conv-{}-h", std::process::id()));
+        let p = write(&dir, &format!("{ID}.jsonl"), &[
+            r#"{"type":"user","timestamp":"2026-09-24T10:00:00Z","message":{"role":"user","content":"Fix the login bug"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-09-24T10:00:05Z","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.ts"}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"SECRET FILE BODY"}]}}"#,
+            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent prompt"}}"#,
+            r#"{"type":"attachment","data":"blob"}"#,
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<channel source=\"clawborrator\">\nnow add tests\n</channel>"}}"#,
+        ]);
+        let items = history_items(&p);
+        let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
+        assert_eq!(kinds, ["user", "claude", "tool", "user"]);
+        assert_eq!(items[2].tool.as_deref(), Some("Read"));
+        assert_eq!(items[3].text.as_deref(), Some("now add tests"));
+        assert_eq!(items[0].at.as_deref(), Some("2026-09-24T10:00:00Z"));
+        assert!(!serde_json::to_string(&items).unwrap().contains("SECRET"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_the_resume_source() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(resume_source(&s(&["--model", "opus", "--resume", ID])).as_deref(), Some(ID));
+        assert_eq!(resume_source(&s(&[&format!("--resume={ID}")])).as_deref(), Some(ID));
+        assert_eq!(resume_source(&s(&["-r", ID])).as_deref(), Some(ID));
+        assert!(resume_source(&s(&["--resume", "not-a-uuid"])).is_none());
+        assert!(resume_source(&s(&["--continue"])).is_none());
+    }
+
+    #[test]
     fn long_titles_are_truncated() {
         let t = one_line(&"word ".repeat(100));
         assert!(t.chars().count() <= TITLE_MAX && t.ends_with('…'));
@@ -429,6 +639,20 @@ mod tests {
 #[cfg(test)]
 mod live {
     /// `cargo test -p shadows-desktop -- --ignored scan_this_machine --nocapture`
+    #[test]
+    #[ignore]
+    fn history_of_this_machine() {
+        let root = super::claude_config_dir().unwrap();
+        let id = std::env::var("RELAY_TEST_CONV").unwrap_or_default();
+        let p = super::find_transcript(&root, &id).expect("transcript");
+        let items = super::history_items(&p);
+        let bytes = serde_json::to_string(&items).unwrap().len();
+        println!("{} items, {} bytes", items.len(), bytes);
+        for i in items.iter().take(4) {
+            println!("{} {:?} {:?}", i.kind, i.text.as_deref().map(|t| &t[..t.len().min(70)]), i.tool);
+        }
+    }
+
     #[test]
     #[ignore]
     fn scan_this_machine() {

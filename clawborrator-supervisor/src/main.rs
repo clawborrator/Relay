@@ -639,8 +639,20 @@ async fn dispatch_session_create(ctx: &DaemonCtx, args: serde_json::Value) -> st
         extra_flags:  &extra_flags,
         auto_enter,
     };
+    let resumed_from = conversations::resume_source(&extra_flags);
     match create_session(&ctx.mgr, create_args).await {
-        Ok(session_id) => Ok(serde_json::json!({ "sessionId": session_id })),
+        Ok(session_id) => {
+            // Resumed from an earlier conversation: send its history to the
+            // shadows app so the new session shows it.
+            if let Some(source) = resumed_from {
+                if let Ok(c) = load_or_init_config() {
+                    if let (Some(url), Some(token)) = (c.shadows_url, c.token) {
+                        tokio::spawn(conversations::upload_history(url, token, ctx.machine_id.clone(), session_id.clone(), source));
+                    }
+                }
+            }
+            Ok(serde_json::json!({ "sessionId": session_id }))
+        }
         Err(e)         => Err(("create_failed".into(), e.to_string())),
     }
 }
