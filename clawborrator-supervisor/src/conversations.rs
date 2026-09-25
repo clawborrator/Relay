@@ -82,11 +82,22 @@ fn prompt_text(d: &Value) -> Option<String> {
             .join(" "),
         _ => return None,
     };
-    let t = text.trim();
+    let t = unwrap_channel(text.trim());
     if t.is_empty() || t.starts_with('<') {
         return None;
     }
     Some(one_line(t))
+}
+
+/// Prompts sent through PairWave arrive wrapped as
+/// `<channel source="clawborrator" …>text</channel>`; use the text inside.
+fn unwrap_channel(t: &str) -> &str {
+    if !t.starts_with("<channel") {
+        return t;
+    }
+    let Some(open_end) = t.find('>') else { return t };
+    let inner = &t[open_end + 1..];
+    inner.strip_suffix("</channel>").unwrap_or(inner).trim()
 }
 
 #[derive(Default)]
@@ -340,6 +351,16 @@ mod tests {
         let later = now + Duration::from_secs((MAX_AGE_DAYS + 1) * 86_400);
         assert!(s.scan(&root, &HashSet::new(), later).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unwraps_prompts_sent_through_pairwave() {
+        let dir = std::env::temp_dir().join(format!("relay-conv-{}-d", std::process::id()));
+        let p = write(&dir, &format!("{ID}.jsonl"), &[
+            r#"{"type":"user","cwd":"/w","message":{"role":"user","content":"<channel source=\"clawborrator\" chat_id=\"x\" sender=\"remote\">\nDoes anything need to be done before the next meeting?\n</channel>"}}"#,
+        ]);
+        assert_eq!(parse_transcript(&p, 10, 1).unwrap().title, "Does anything need to be done before the next meeting?");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
