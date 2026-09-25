@@ -234,6 +234,21 @@ impl SessionManager {
     /// process is still running — the usage reporter reads each one's
     /// statusline.json. Exited sessions are skipped so their last snapshot
     /// isn't re-sent as if it were current.
+    /// Claude Code conversation ids of the sessions this daemon is running
+    /// right now (so the resumable-conversation list can leave them out).
+    pub fn list_live_cc_session_ids(&self) -> Vec<String> {
+        let map = self.inner.lock().unwrap();
+        let mut out = Vec::with_capacity(map.len());
+        for entry in map.values() {
+            if let Ok(mut s) = entry.lock() {
+                if matches!(s.child.try_wait(), Ok(None)) {
+                    out.push(s.cc_session_id.clone());
+                }
+            }
+        }
+        out
+    }
+
     pub fn list_session_scratch_dirs(&self) -> Vec<(String, std::path::PathBuf)> {
         let map = self.inner.lock().unwrap();
         let mut out = Vec::with_capacity(map.len());

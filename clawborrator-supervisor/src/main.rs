@@ -26,6 +26,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
 mod auth;
+mod conversations;
 mod autostart;
 mod ipc;
 mod logging;
@@ -1176,6 +1177,16 @@ pub(crate) async fn run_daemon(
         info!("no shadows_url in config yet; usage reporting starts once paired against a shadows app");
     }
     statusline::spawn_usage_reporter(mgr.clone(), statusline::ReporterConfig {
+        creds: Arc::new(|| {
+            let c = load_or_init_config().ok()?;
+            Some((c.shadows_url?, c.token?))
+        }),
+        machine_id:     cfg.machine_id.clone(),
+        daemon_version: DAEMON_VERSION,
+    });
+    // Resumable Claude Code conversations on this machine (incl. ones started
+    // outside PairWave), so the shadows app can offer to resume them.
+    conversations::spawn_conversation_reporter(mgr.clone(), statusline::ReporterConfig {
         creds: Arc::new(|| {
             let c = load_or_init_config().ok()?;
             Some((c.shadows_url?, c.token?))
