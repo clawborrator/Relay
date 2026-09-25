@@ -37,6 +37,7 @@ mod spawn;
 mod status;
 mod statusline;
 mod token_usage;
+mod update;
 mod worktree;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod gui;
@@ -211,6 +212,12 @@ enum Command {
     Statusline {
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Update Relay to the latest release and restart it (ends running
+    /// sessions). `--check` only reports whether an update exists.
+    Update {
+        #[arg(long)]
+        check: bool,
     },
     /// Start a new managed Claude Code session in a folder.
     New {
@@ -899,6 +906,7 @@ async fn run_subcommand(cli: &Cli, cmd: Command) -> Result<()> {
         Command::Attach { session_id }               => ipc::client_attach(session_id).await,
         Command::End { session_id }                  => cmd_end(session_id).await,
         Command::New { folder, routing_name, flags } => cmd_new(folder, routing_name, flags).await,
+        Command::Update { check } => cmd_update(check).await,
         Command::Statusline { out } => {
             statusline::run_statusline(&out);
             Ok(())
@@ -934,6 +942,29 @@ async fn cmd_end(session_id: String) -> Result<()> {
 }
 
 /// `new <folder>` — spawn a new managed session.
+/// `relay update [--check]`: report / install the latest release.
+async fn cmd_update(check: bool) -> Result<()> {
+    let Some(latest) = update::latest_release().await? else {
+        println!("No Relay releases found.");
+        return Ok(());
+    };
+    if !update::is_newer(&latest.version, update::CURRENT) {
+        println!("Relay {} is up to date.", update::CURRENT);
+        return Ok(());
+    }
+    println!("Relay {} is available (you have {}).", latest.version, update::CURRENT);
+    if check {
+        return Ok(());
+    }
+    println!("Updating. This restarts Relay, which ends the sessions it's running.");
+    // The installer drives its own runtime, so keep it off this one.
+    std::thread::spawn(move || update::install_and_restart(&latest))
+        .join()
+        .map_err(|_| anyhow!("update thread panicked"))??;
+    println!("Relay updated to the new version.");
+    Ok(())
+}
+
 async fn cmd_new(folder: String, routing_name: Option<String>, flags: Vec<String>) -> Result<()> {
     let id = ipc::client_new(folder, routing_name, flags).await?;
     eprintln!("Started session {id}.");
@@ -1364,6 +1395,9 @@ fn main() -> Result<()> {
             .build()
             .context("building tokio runtime")?;
         let (mgr, restart_rx) = new_session_manager();
+        // No tray here: periodic checks just log "update available";
+        // `relay update` installs it.
+        update::Updater::new().start_periodic();
         runtime.block_on(run_daemon(cli, TrayStatusUpdater::noop(), mgr, restart_rx))
     }
 }

@@ -327,15 +327,30 @@ const HEARTBEAT: Duration = Duration::from_secs(5 * 60);
 /// `<shadows_url>/api/relay/usage`. Best-effort: failures are logged and
 /// retried on the next tick; a 404 (older PairWave without the endpoint)
 /// backs off to the heartbeat interval.
+/// HTTP client for the periodic reports to the shadows app. Idle pooled
+/// connections are dropped after a minute and probed with keepalives, and
+/// the reporters rebuild the client after any send error: a long-lived
+/// client once kept failing every report for 17 hours while fresh clients
+/// in the same process got through.
+pub(crate) fn report_client(timeout: Duration) -> Option<reqwest::Client> {
+    match reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(60))
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => Some(c),
+        Err(e) => {
+            warn!(error = %e, "report http client");
+            None
+        }
+    }
+}
+
 pub fn spawn_usage_reporter(mgr: Arc<SessionManager>, cfg: ReporterConfig) {
     tokio::spawn(async move {
-        let client = match reqwest::Client::builder().timeout(Duration::from_secs(15)).build() {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(error = %e, "usage reporter: http client");
-                return;
-            }
-        };
+        let Some(mut client) = report_client(Duration::from_secs(15)) else { return };
         let mut last_sent: Vec<SessionUsage> = Vec::new();
         let mut last_post = Instant::now() - HEARTBEAT;
         let mut unsupported_until: Option<Instant> = None;
@@ -374,7 +389,10 @@ pub fn spawn_usage_reporter(mgr: Arc<SessionManager>, cfg: ReporterConfig) {
                     unsupported_until = Some(Instant::now() + HEARTBEAT);
                 }
                 Ok(r) => warn!(status = %r.status(), "usage report rejected"),
-                Err(e) => warn!(error = %e, "usage report failed"),
+                Err(e) => {
+                    warn!(error = ?e, "usage report failed; reconnecting next time");
+                    if let Some(c) = report_client(Duration::from_secs(15)) { client = c; }
+                }
             }
         }
     });

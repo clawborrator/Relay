@@ -85,7 +85,9 @@ pub fn run_with_tray(cli: Cli, log_path: PathBuf) -> Result<()> {
 
     // Initial menu — empty session list; the pump fills it in as the
     // daemon registers sessions.
-    let menu = build_menu("starting…", &[])?;
+    let updater = crate::update::Updater::new();
+    updater.start_periodic();
+    let menu = build_menu("starting…", &[], &updater.phase())?;
     let icon = decode_icon().context("decoding embedded tray icon")?;
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -97,10 +99,11 @@ pub fn run_with_tray(cli: Cli, log_path: PathBuf) -> Result<()> {
     thread::spawn({
         let log_path = log_path.clone();
         let mgr = mgr.clone();
-        move || drain_menu_events(hub_url, log_path, shutdown_tx, mgr)
+        let updater = updater.clone();
+        move || drain_menu_events(hub_url, log_path, shutdown_tx, mgr, updater)
     });
 
-    let mut menu_state = MenuState::new(tray, mgr);
+    let mut menu_state = MenuState::new(tray, mgr, updater);
     run_event_pump(&app, &mut menu_state, &status_rx, &stop);
 
     match daemon_handle.join() {

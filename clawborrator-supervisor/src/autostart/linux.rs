@@ -196,7 +196,7 @@ fn current_uid() -> Option<u32> {
     None
 }
 
-fn run_systemctl_user(args: &[&str]) -> Result<std::process::Output> {
+pub(crate) fn run_systemctl_user(args: &[&str]) -> Result<std::process::Output> {
     let mut cmd = Command::new("systemctl");
     cmd.arg("--user").args(args);
 

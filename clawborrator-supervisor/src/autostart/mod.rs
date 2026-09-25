@@ -19,6 +19,9 @@ use anyhow::Result;
 /// Start the installed autostart entry immediately (Windows only - used
 /// by the first-run setup wizard's "install + start" button).
 #[cfg(target_os = "windows")] pub use windows::run_now;
+/// `systemctl --user` with the SSH-session XDG_RUNTIME_DIR fallback (used by
+/// the updater to restart relay.service).
+#[cfg(target_os = "linux")] pub(crate) use linux::run_systemctl_user;
 
 #[derive(Debug)]
 pub enum AutostartStatus {
