@@ -305,7 +305,13 @@ fn drain_menu_events(
             },
             MenuAction::Attach(sid) => open_attach_terminal(&sid),
             MenuAction::End(sid) => match crate::spawn::kill_session(&mgr, &sid) {
-                Ok(())  => info!(session_id = %sid, "ended session from tray"),
+                Ok(())  => {
+                    info!(session_id = %sid, "ended session from tray");
+                    // Ended on purpose: don't bring it back on the next restart.
+                    if let Some(token) = crate::load_or_init_config().ok().and_then(|c| c.token) {
+                        crate::resume_state::stop_auto_restart_in_background(hub_url.clone(), token, sid.clone());
+                    }
+                }
                 Err(e)  => warn!(error = %e, session_id = %sid, "tray End failed"),
             },
             MenuAction::Quit => {

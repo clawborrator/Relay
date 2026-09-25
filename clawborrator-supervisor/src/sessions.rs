@@ -154,6 +154,9 @@ impl SessionManager {
     }
 
     pub fn insert(&self, sid: String, sess: ManagedSession) {
+        // Remember which Claude Code conversation this session runs, so a
+        // respawn after a Relay restart can resume it (resume_state.rs).
+        crate::resume_state::record(&sid, &sess.cc_session_id);
         self.inner.lock().unwrap().insert(sid, Arc::new(Mutex::new(sess)));
     }
 

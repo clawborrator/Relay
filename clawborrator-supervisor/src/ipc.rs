@@ -187,7 +187,11 @@ async fn handle_conn(conn: Stream, mgr: Arc<SessionManager>, cfg: Arc<IpcConfig>
         }
         Request::End { id } => {
             let resp = match kill_session(&mgr, &id) {
-                Ok(())  => Response::Ok,
+                Ok(())  => {
+                    // Ended on purpose: don't bring it back on the next restart.
+                    crate::resume_state::stop_auto_restart_in_background(cfg.hub_url.clone(), cfg.pat.clone(), id.clone());
+                    Response::Ok
+                }
                 Err(e)  => Response::Error { message: e.to_string() },
             };
             send_response(&conn, &resp).await?;

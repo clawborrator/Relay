@@ -380,7 +380,7 @@ pub fn resume_source(flags: &[String]) -> Option<String> {
 }
 
 /// `<config>/projects/*/<id>.jsonl`
-fn find_transcript(root: &Path, id: &str) -> Option<PathBuf> {
+pub(crate) fn find_transcript(root: &Path, id: &str) -> Option<PathBuf> {
     let name = format!("{id}.jsonl");
     std::fs::read_dir(root.join("projects")).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.is_file())
 }

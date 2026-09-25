@@ -37,6 +37,7 @@ mod spawn;
 mod status;
 mod statusline;
 mod token_usage;
+mod resume_state;
 mod update;
 mod worktree;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
