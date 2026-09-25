@@ -258,12 +258,22 @@ fn hub_ws_url(hub_url: &str) -> String {
 /// Spawn CC under a PTY in `folder`, configured to load the MCP
 /// at `mcp_path`. Returns the PTY master + child handle so the
 /// caller can wire reader/writer tasks.
+/// MCP server startup window passed to Claude Code (ms). See spawn_cc.
+const MCP_START_TIMEOUT_MS: &str = "120000";
+
 fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_flags: &[String]) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::Child + Send + Sync>)> {
     let pty = native_pty_system().openpty(fresh_pty_size())
         .map_err(|e| anyhow!("openpty: {e}"))?;
     let mut cmd = CommandBuilder::new("claude");
     cmd.cwd(folder);
     cmd.arg("--dangerously-load-development-channels=server:clawborrator");
+    // Claude Code gives MCP servers 30s to start by default. Resuming a long
+    // conversation can stall the process past that, the clawborrator server
+    // is dropped, and the session never connects to the hub. Allow longer
+    // unless the operator set their own MCP_TIMEOUT.
+    if std::env::var_os("MCP_TIMEOUT").is_none() {
+        cmd.env("MCP_TIMEOUT", MCP_START_TIMEOUT_MS);
+    }
     cmd.arg("--mcp-config");
     cmd.arg(mcp_path.as_os_str());
     // Pin CC's session id so the token-usage sampler can find this
