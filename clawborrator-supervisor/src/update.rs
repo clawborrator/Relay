@@ -338,7 +338,10 @@ mod platform {
         if active {
             // Stops the running daemon (possibly this process) and starts
             // the updated binary.
-            Command::new("systemctl").args(["--user", "restart", "relay.service"]).status()?;
+            let st = Command::new("systemctl").args(["--user", "restart", "relay.service"]).status()?;
+            if !st.success() {
+                bail!("updated, but `systemctl --user restart relay.service` failed ({st}); restart Relay to run the new version");
+            }
             return Ok(());
         }
         bail!("updated; restart Relay to run the new version")
@@ -352,13 +355,21 @@ mod platform {
     use std::process::Command;
 
     pub fn install(exe: &Path, new_exe: &Path, dir: &Path) -> Result<()> {
-        // A running .exe can't be overwritten but can be renamed.
+        // Stage the complete new exe next to the old one first, so a
+        // failed write never touches the install. Then swap: a running
+        // .exe can't be overwritten but can be renamed.
+        let staged = exe.with_extension("new.exe");
+        let _ = std::fs::remove_file(&staged);
+        if let Err(e) = std::fs::copy(new_exe, &staged) {
+            let _ = std::fs::remove_file(&staged);
+            return Err(e).context("writing the new relay.exe");
+        }
         let old = exe.with_extension("old.exe");
         let _ = std::fs::remove_file(&old);
         std::fs::rename(exe, &old).context("moving the running relay.exe aside")?;
-        if let Err(e) = std::fs::copy(new_exe, exe) {
+        if let Err(e) = std::fs::rename(&staged, exe) {
             let _ = std::fs::rename(&old, exe);
-            return Err(e).context("writing the new relay.exe");
+            return Err(e).context("moving the new relay.exe into place");
         }
         let _ = std::fs::remove_dir_all(dir);
         Ok(())
@@ -370,11 +381,15 @@ mod platform {
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         // After a short wait (so a daemon calling this has exited), stop
-        // any still-running daemon and start the scheduled task again, or
-        // the exe directly when there's no task.
+        // any still-running daemon — the scheduled task, or one started by
+        // hand (any other process of this exe, e.g. when `relay update` ran
+        // from a shell) — then start the task again, or the exe directly
+        // when there's no task.
+        let image = exe.file_name().and_then(|n| n.to_str()).unwrap_or("relay.exe");
         let script = format!(
-            "ping -n 4 127.0.0.1 >nul & schtasks /End /TN Relay >nul 2>&1 & ping -n 2 127.0.0.1 >nul & schtasks /Run /TN Relay >nul 2>&1 || start \"\" \"{}\" --background",
-            exe.display()
+            "ping -n 4 127.0.0.1 >nul & schtasks /End /TN Relay >nul 2>&1 & taskkill /F /FI \"IMAGENAME eq {image}\" /FI \"PID ne {pid}\" >nul 2>&1 & ping -n 3 127.0.0.1 >nul & schtasks /Run /TN Relay >nul 2>&1 || start \"\" \"{exe}\" --background",
+            pid = std::process::id(),
+            exe = exe.display()
         );
         let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
         let spawned = Command::new("cmd")
