@@ -87,12 +87,51 @@ relay sessions                    # list managed sessions
 relay attach <id>                 # attach a terminal to a session (Ctrl-] to detach)
 relay end <id>                    # kill a session
 relay new <folder>                # start a session locally
+relay update [--check]            # install the latest release and restart (or just check)
 relay prereq-check                # verify claude + node/npm/npx are reachable
 relay install-prereqs             # download + install missing prereqs (macOS/Linux)
 ```
 
 Global flags (`--shadows-url`, `--hub-url`, `--pat`, `--machine-id`) work
 either before or after the subcommand.
+
+## Updating
+
+Relay 0.4.5+ checks the latest GitHub release at start and every 6 hours.
+When a newer one exists, the menu-bar / tray menu shows **"Update to Relay
+x.y.z"** (with "(ends N sessions)" while sessions are running); otherwise
+**"Check for updates"**. Choosing it downloads this platform's release asset
+and installs it in place, then restarts Relay through whatever started it:
+
+- **macOS**: swaps `Relay.app` for the one in the .dmg, then
+  `launchctl kickstart -k` on the LaunchAgent.
+- **Linux**: replaces the binary, then restarts `relay.service`
+  (`systemctl --user`).
+- **Windows**: stages the new `.exe`, swaps it in, and re-runs the
+  "Relay" scheduled task.
+
+The pairing (`~/.clawborrator/shadows-desktop.json`) is untouched, so
+nothing needs re-pairing. The restart ends running sessions. Headless
+installs log "Relay update available"; run `relay update` (or
+`relay update --check` to just look). Versions before 0.4.5 update by
+installing the new build over the old one.
+
+## What else it does
+
+- **Plan usage**: routes each session's Claude Code status line through
+  `relay statusline` and reports model, context use and the account's
+  5-hour / weekly limits to the shadows app (`/api/relay/usage`).
+- **Resumable conversations** (0.4.1+): reports recent Claude Code
+  conversations on the machine (last 30 days, including ones started
+  outside the app) to `/api/relay/conversations`, so they can be resumed
+  from the web app. `RELAY_NO_CONVERSATION_LIST=1` turns this off. When a
+  session is spawned with `--resume` (0.4.2+), its earlier prompts, replies
+  and tool calls (no tool output) are uploaded to `/api/relay/history`.
+- **One session per folder**: a second managed session in a busy folder is
+  refused. Spawning with `--worktree <name>` (0.4.4+) creates or reuses
+  `<repo>/.claude/worktrees/<name>` on branch `worktree-<name>` and runs the
+  session there, so several sessions can work on one repo.
+- **Open dashboard** (0.4.4+) opens the paired app's dashboard.
 
 ## Re-pairing / recovery
 
