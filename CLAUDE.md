@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-**Relay** (`shadows-desktop` crate, v0.4.2) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
+**Relay** (`shadows-desktop` crate, v0.4.3) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
 
 Fork of `desktop_v1` (`clawborrator-supervisor`). The only behavioral difference is authentication: instead of pairing against the hub's GitHub OAuth, it pairs against the **shadows app** (Google/Zoho SSO). Shadows brokers a hub token for the user's shadow principal. Everything downstream (the `/supervisor` WebSocket, session spawn/kill/restart, channel-token plumbing) is unchanged from desktop_v1.
 
@@ -106,7 +106,7 @@ Upstream WS/session fixes can be pulled from desktop_v1 with minimal conflict si
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `DAEMON_VERSION` | from Cargo.toml (currently `0.4.2`) | Sent in the `hello` WS frame |
+| `DAEMON_VERSION` | from Cargo.toml (currently `0.4.3`) | Sent in the `hello` WS frame |
 | `DEFAULT_SHADOWS_URL` | `https://shadows-app.fly.dev` | Default pairing target |
 | `PING_INTERVAL` | 30s | WS keepalive |
 | `LIVENESS_TIMEOUT` | 90s | No-frame deadline before forced reconnect |
