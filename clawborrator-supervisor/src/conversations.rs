@@ -278,13 +278,7 @@ pub fn spawn_conversation_reporter(mgr: Arc<SessionManager>, cfg: ReporterConfig
         return;
     }
     tokio::spawn(async move {
-        let client = match reqwest::Client::builder().timeout(Duration::from_secs(20)).build() {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(error = %e, "conversation reporter: http client");
-                return;
-            }
-        };
+        let Some(mut client) = crate::statusline::report_client(Duration::from_secs(20)) else { return };
         let Some(root) = claude_config_dir() else { return };
         let mut scanner = Scanner::default();
         let mut last_sent: Option<Vec<Conversation>> = None;
@@ -325,7 +319,10 @@ pub fn spawn_conversation_reporter(mgr: Arc<SessionManager>, cfg: ReporterConfig
                         }
                         Ok(r) if r.status().as_u16() == 404 => unsupported_until = Some(Instant::now() + HEARTBEAT),
                         Ok(r) => warn!(status = %r.status(), "conversation report rejected"),
-                        Err(e) => warn!(error = %e, "conversation report failed"),
+                        Err(e) => {
+                            warn!(error = ?e, "conversation report failed; reconnecting next time");
+                            if let Some(c) = crate::statusline::report_client(Duration::from_secs(20)) { client = c; }
+                        }
                     }
                 }
             }

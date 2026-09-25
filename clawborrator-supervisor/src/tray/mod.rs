@@ -34,6 +34,7 @@ use tray_icon::{
 
 use crate::sessions::{SessionManager, SessionSummary};
 use crate::status::TrayStatus;
+use crate::update::{Phase, Updater};
 
 #[cfg(target_os = "windows")] mod windows;
 #[cfg(target_os = "macos")]   mod macos;
@@ -57,6 +58,8 @@ const ID_DASHBOARD:  &str = "cw:dashboard";
 const ID_LOG:        &str = "cw:log";
 const ID_REPAIR:     &str = "cw:repair";
 const ID_QUIT:       &str = "cw:quit";
+const ID_UPDATE:     &str = "cw:update";
+const ID_CHECK:      &str = "cw:check-update";
 const ATTACH_PREFIX: &str = "cw:attach:";
 const END_PREFIX:    &str = "cw:end:";
 
@@ -94,7 +97,7 @@ fn session_sig(sessions: &[SessionSummary]) -> String {
 }
 
 /// Build the full tray menu for the given status + session list.
-fn build_menu(status_label: &str, sessions: &[SessionSummary]) -> Result<Menu> {
+fn build_menu(status_label: &str, sessions: &[SessionSummary], update: &Phase) -> Result<Menu> {
     let menu = Menu::new();
 
     // Disabled status header.
@@ -141,11 +144,35 @@ fn build_menu(status_label: &str, sessions: &[SessionSummary]) -> Result<Menu> {
     // status header shows "AUTH FAILED" and this is how you get back.
     menu.append(&MenuItem::with_id(ID_REPAIR, "Re-pair this machine…", true, None))
         .map_err(menu_err)?;
+    let live = sessions.iter().filter(|s| s.alive).count();
+    let (id, label, enabled) = update_item(update, live);
+    menu.append(&MenuItem::with_id(id, label, enabled, None)).map_err(menu_err)?;
     menu.append(&PredefinedMenuItem::separator()).map_err(menu_err)?;
     menu.append(&MenuItem::with_id(ID_QUIT, "Quit", true, None))
         .map_err(menu_err)?;
 
     Ok(menu)
+}
+
+/// The update menu item for the current update phase: (id, label, enabled).
+/// Updating restarts Relay, which ends its sessions, so the label says so.
+fn update_item(phase: &Phase, live_sessions: usize) -> (&'static str, String, bool) {
+    match phase {
+        Phase::Available(r) if r.asset_url.is_some() => {
+            let ends = match live_sessions {
+                0 => String::new(),
+                1 => " (ends 1 session)".into(),
+                n => format!(" (ends {n} sessions)"),
+            };
+            (ID_UPDATE, format!("Update to Relay {}{ends}", r.version), true)
+        }
+        Phase::Available(r) => (ID_UPDATE, format!("Relay {} available — download…", r.version), true),
+        Phase::Checking => (ID_CHECK, "Checking for updates…".into(), false),
+        Phase::Installing(v) => (ID_CHECK, format!("Updating to {v}…"), false),
+        Phase::UpToDate => (ID_CHECK, format!("Up to date ({}) — check again", crate::update::CURRENT), true),
+        Phase::Failed(msg) => (ID_CHECK, format!("{msg} — try again"), true),
+        Phase::Idle => (ID_CHECK, "Check for updates".into(), true),
+    }
 }
 
 /// Owns the tray icon plus the inputs the menu is rendered from. The
@@ -158,13 +185,14 @@ struct MenuState {
     mgr:    Arc<SessionManager>,
     status: TrayStatus,
     sig:    String,
+    update: Updater,
 }
 
 impl MenuState {
-    fn new(tray: TrayIcon, mgr: Arc<SessionManager>) -> Self {
+    fn new(tray: TrayIcon, mgr: Arc<SessionManager>, update: Updater) -> Self {
         // `sig` starts as a sentinel no real session set produces, so
         // the first refresh always paints the dynamic menu.
-        Self { tray, mgr, status: TrayStatus::Connecting, sig: "\u{0}".into() }
+        Self { tray, mgr, status: TrayStatus::Connecting, sig: "\u{0}".into(), update }
     }
 
     fn refresh(&mut self, status_rx: &Receiver<TrayStatus>) {
@@ -174,7 +202,8 @@ impl MenuState {
             changed = true;
         }
         let sessions = self.mgr.list_sessions();
-        let sig = session_sig(&sessions);
+        let phase = self.update.phase();
+        let sig = format!("{}|{phase:?}", session_sig(&sessions));
         if sig != self.sig {
             self.sig = sig;
             changed = true;
@@ -182,7 +211,7 @@ impl MenuState {
         if !changed {
             return;
         }
-        match build_menu(self.status.label(), &sessions) {
+        match build_menu(self.status.label(), &sessions, &phase) {
             Ok(menu) => self.tray.set_menu(Some(Box::new(menu))),
             Err(e)   => warn!(?e, "rebuilding tray menu failed"),
         }
@@ -198,6 +227,8 @@ enum MenuAction {
     OpenDashboard,
     OpenLog,
     Repair,
+    Update,
+    CheckUpdate,
     Quit,
     Attach(String),
     End(String),
@@ -212,6 +243,10 @@ fn classify(ev: &MenuEvent) -> MenuAction {
         MenuAction::OpenLog
     } else if id == ID_REPAIR {
         MenuAction::Repair
+    } else if id == ID_UPDATE {
+        MenuAction::Update
+    } else if id == ID_CHECK {
+        MenuAction::CheckUpdate
     } else if id == ID_QUIT {
         MenuAction::Quit
     } else if let Some(sid) = id.strip_prefix(ATTACH_PREFIX) {
@@ -247,6 +282,7 @@ fn drain_menu_events(
     log_path:    PathBuf,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     mgr:         Arc<SessionManager>,
+    update:      Updater,
 ) {
     for ev in MenuEvent::receiver() {
         match classify(&ev) {
@@ -260,6 +296,13 @@ fn drain_menu_events(
             // pick the current day's file.
             MenuAction::OpenLog => open_path(log_path.parent().unwrap_or(&log_path)),
             MenuAction::Repair => open_repair_wizard(),
+            MenuAction::CheckUpdate => update.check_in_background(false),
+            MenuAction::Update => match update.phase() {
+                Phase::Available(r) if r.asset_url.is_none() => {
+                    let _ = webbrowser::open(&r.page_url);
+                }
+                _ => update.install_in_background(),
+            },
             MenuAction::Attach(sid) => open_attach_terminal(&sid),
             MenuAction::End(sid) => match crate::spawn::kill_session(&mgr, &sid) {
                 Ok(())  => info!(session_id = %sid, "ended session from tray"),
