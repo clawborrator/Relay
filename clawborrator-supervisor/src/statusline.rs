@@ -68,7 +68,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Claude Code's config dir: $CLAUDE_CONFIG_DIR, else ~/.claude.
-fn claude_config_dir() -> Option<PathBuf> {
+pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         let p = PathBuf::from(d);
         if !p.as_os_str().is_empty() {
