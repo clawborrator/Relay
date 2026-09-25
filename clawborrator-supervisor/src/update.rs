@@ -226,10 +226,22 @@ async fn download(url: &str, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A fresh, private staging dir under the user's own cache dir (never a
+/// shared /tmp, where another user could pre-create it and swap the
+/// download). The leaf is a new random name created exclusively.
 fn scratch_dir() -> Result<PathBuf> {
-    let d = std::env::temp_dir().join(format!("relay-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d)?;
+    let base = dirs::cache_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+        .ok_or_else(|| anyhow!("could not resolve a cache dir"))?
+        .join("relay-updates");
+    std::fs::create_dir_all(&base).with_context(|| format!("creating {}", base.display()))?;
+    let d = base.join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir(&d).with_context(|| format!("creating {}", d.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
+    }
     Ok(d)
 }
 
@@ -319,7 +331,6 @@ mod platform {
 mod platform {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
 
     pub fn install(exe: &Path, bin: &Path, dir: &Path) -> Result<()> {
         std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755))?;
@@ -331,17 +342,14 @@ mod platform {
     }
 
     pub fn restart(_exe: &Path) -> Result<()> {
-        let active = Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", "relay.service"])
-            .status()
-            .is_ok_and(|s| s.success());
-        if active {
+        // Same `systemctl --user` wrapper as autostart (sets XDG_RUNTIME_DIR
+        // for SSH sessions without it); a non-zero exit is an Err.
+        use crate::autostart::run_systemctl_user;
+        if run_systemctl_user(&["is-active", "--quiet", "relay.service"]).is_ok() {
             // Stops the running daemon (possibly this process) and starts
             // the updated binary.
-            let st = Command::new("systemctl").args(["--user", "restart", "relay.service"]).status()?;
-            if !st.success() {
-                bail!("updated, but `systemctl --user restart relay.service` failed ({st}); restart Relay to run the new version");
-            }
+            run_systemctl_user(&["restart", "relay.service"])
+                .context("updated, but restarting relay.service failed; restart Relay to run the new version")?;
             return Ok(());
         }
         bail!("updated; restart Relay to run the new version")
