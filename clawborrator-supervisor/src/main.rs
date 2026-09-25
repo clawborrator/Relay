@@ -37,6 +37,7 @@ mod spawn;
 mod status;
 mod statusline;
 mod token_usage;
+mod worktree;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod gui;
 mod prereq_install;
@@ -626,9 +627,11 @@ fn classify_dispatch_err(default_code: &str, e: anyhow::Error) -> (String, Strin
 
 async fn dispatch_session_create(ctx: &DaemonCtx, args: serde_json::Value) -> std::result::Result<serde_json::Value, (String, String)> {
     let parsed: SessionCreateArgs = serde_json::from_value(args).map_err(|e| ("bad_args".into(), e.to_string()))?;
-    let folder = PathBuf::from(parsed.folder);
+    // `--worktree <name>`: run the session in its own git worktree folder,
+    // so several sessions can work on one repo (see worktree.rs).
+    let (folder, extra_flags) = worktree::resolve(PathBuf::from(parsed.folder), &parsed.extra_flags)
+        .map_err(|e| ("create_failed".to_string(), e.to_string()))?;
     let routing_name_owned = parsed.routing_name;
-    let extra_flags = parsed.extra_flags;
     let auto_enter = parsed.auto_enter;
     let create_args = CreateArgs {
         hub_url:      &ctx.hub_url,
