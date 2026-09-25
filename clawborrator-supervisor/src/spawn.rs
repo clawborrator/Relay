@@ -309,7 +309,13 @@ fn spawn_cc(folder: &PathBuf, mcp_path: &PathBuf, cc_session_id: &str, extra_fla
     // value when a flag repeats). One argv slot per entry —
     // operators pass `--model opus` as two entries `["--model","opus"]`
     // or as a single `["--model=opus"]`.
-    for flag in extra_flags {
+    // `--worktree` is handled by the daemon (worktree.rs): `folder` is
+    // already the worktree, so never let CC nest another one inside it
+    // (restarts re-send the hub row's original flags).
+    let extra_flags = crate::worktree::take_worktree_flag(extra_flags)
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|_| extra_flags.to_vec());
+    for flag in &extra_flags {
         if !flag.is_empty() { cmd.arg(flag); }
     }
     // CC rejects `--session-id` together with `--resume`/`--continue`

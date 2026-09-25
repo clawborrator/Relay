@@ -227,6 +227,21 @@ fn classify(ev: &MenuEvent) -> MenuAction {
 /// shutdown watch (the daemon thread then tears the pump down). `End`
 /// kills the session directly via the shared manager; `Attach` opens a
 /// terminal running the `attach` subcommand.
+/// The app this machine is paired with (e.g. `https://pairwave.app/dashboard`),
+/// read fresh so a re-pair is picked up. Falls back to the hub for machines
+/// logged in without an app.
+fn dashboard_url(hub_url: &str) -> String {
+    let app = crate::load_or_init_config().ok().and_then(|c| c.shadows_url);
+    dashboard_url_for(app.as_deref(), hub_url)
+}
+
+fn dashboard_url_for(app: Option<&str>, hub_url: &str) -> String {
+    match app.map(|a| a.trim().trim_end_matches('/')).filter(|a| !a.is_empty()) {
+        Some(a) => format!("{a}/dashboard"),
+        None => hub_url.to_string(),
+    }
+}
+
 fn drain_menu_events(
     hub_url:     String,
     log_path:    PathBuf,
@@ -236,8 +251,9 @@ fn drain_menu_events(
     for ev in MenuEvent::receiver() {
         match classify(&ev) {
             MenuAction::OpenDashboard => {
-                if let Err(e) = webbrowser::open(&hub_url) {
-                    warn!(?e, hub_url = %hub_url, "failed to open dashboard");
+                let url = dashboard_url(&hub_url);
+                if let Err(e) = webbrowser::open(&url) {
+                    warn!(?e, url = %url, "failed to open dashboard");
                 }
             }
             // Daily-rolled log — open the folder so the operator can
@@ -375,5 +391,15 @@ fn open_attach_terminal(session_id: &str) {
         .spawn()
     {
         warn!(?e, "failed to launch console for attach");
+    }
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    #[test]
+    fn dashboard_opens_the_paired_app() {
+        assert_eq!(super::dashboard_url_for(Some("https://pairwave.app/"), "https://hub"), "https://pairwave.app/dashboard");
+        assert_eq!(super::dashboard_url_for(None, "https://hub"), "https://hub");
+        assert_eq!(super::dashboard_url_for(Some("  "), "https://hub"), "https://hub");
     }
 }
