@@ -15,7 +15,7 @@
 //! read, and results are cached by (path, size, mtime) between scans.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -31,7 +31,10 @@ const TICK: Duration = Duration::from_secs(120);
 const HEARTBEAT: Duration = Duration::from_secs(15 * 60);
 const MAX_CONVERSATIONS: usize = 200;
 const MAX_AGE_DAYS: u64 = 30;
-const HEAD_BYTES: u64 = 256 * 1024;
+/// How far into a transcript to look for its folder + first prompt.
+const HEAD_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Lines longer than this (big attachments, tool output) are skipped unparsed.
+const MAX_LINE: usize = 512 * 1024;
 const TAIL_BYTES: u64 = 256 * 1024;
 const TITLE_MAX: usize = 120;
 
@@ -68,7 +71,7 @@ fn one_line(s: &str) -> String {
 /// Text of a user prompt, skipping tool results and injected blocks
 /// (`<command-name>`, `<system-reminder>`, …) that aren't something a person typed.
 fn prompt_text(d: &Value) -> Option<String> {
-    if d.get("isSidechain").and_then(Value::as_bool) == Some(true) || d.get("isMeta").and_then(Value::as_bool) == Some(true) {
+    if d.get("isSidechain").and_then(Value::as_bool) == Some(true) {
         return None;
     }
     let content = d.pointer("/message/content")?;
@@ -82,6 +85,13 @@ fn prompt_text(d: &Value) -> Option<String> {
             .join(" "),
         _ => return None,
     };
+    // Injected turns are marked isMeta, except that prompts sent through
+    // PairWave are too (they arrive as <channel> blocks) and are exactly
+    // what someone typed.
+    let is_channel = text.trim_start().starts_with("<channel");
+    if d.get("isMeta").and_then(Value::as_bool) == Some(true) && !is_channel {
+        return None;
+    }
     let t = unwrap_channel(text.trim());
     if t.is_empty() || t.starts_with('<') {
         return None;
@@ -108,9 +118,17 @@ struct Parsed {
     first_prompt: Option<String>,
 }
 
-fn scan_lines(text: &str, p: &mut Parsed, from_tail: bool) {
-    for line in text.lines() {
-        let Ok(d) = serde_json::from_str::<Value>(line) else { continue };
+/// Only user turns and title records matter; skip everything else unparsed.
+fn interesting(line: &str) -> bool {
+    line.len() <= MAX_LINE && (line.contains("\"type\":\"user\"") || line.contains("\"custom-title\""))
+}
+
+fn scan_line(line: &str, p: &mut Parsed, from_tail: bool) {
+    {
+        if !interesting(line) {
+            return;
+        }
+        let Ok(d) = serde_json::from_str::<Value>(line) else { return };
         match d.get("type").and_then(Value::as_str) {
             Some("custom-title") => {
                 if let Some(t) = d.get("customTitle").and_then(Value::as_str) {
@@ -141,6 +159,28 @@ fn scan_lines(text: &str, p: &mut Parsed, from_tail: bool) {
     }
 }
 
+/// Stream lines from the start until the folder and first prompt are known.
+/// Returns how many bytes were consumed.
+fn scan_head(f: &mut std::fs::File, p: &mut Parsed) -> u64 {
+    let mut reader = BufReader::with_capacity(64 * 1024, f.take(HEAD_MAX_BYTES));
+    let mut buf = Vec::new();
+    let mut consumed = 0u64;
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => consumed += n as u64,
+        }
+        if buf.len() <= MAX_LINE {
+            scan_line(&String::from_utf8_lossy(&buf), p, false);
+        }
+        if p.cwd.is_some() && p.first_prompt.is_some() {
+            break;
+        }
+    }
+    consumed
+}
+
 fn read_range(f: &mut std::fs::File, start: u64, len: u64) -> String {
     let mut buf = Vec::with_capacity(len as usize);
     if f.seek(SeekFrom::Start(start)).is_ok() {
@@ -155,11 +195,13 @@ pub fn parse_transcript(path: &Path, size: u64, mtime: u64) -> Option<Conversati
     uuid::Uuid::parse_str(&session_id).ok()?;
     let mut f = std::fs::File::open(path).ok()?;
     let mut p = Parsed::default();
-    scan_lines(&read_range(&mut f, 0, HEAD_BYTES), &mut p, false);
-    if size > HEAD_BYTES {
-        let start = size.saturating_sub(TAIL_BYTES).max(HEAD_BYTES);
+    let head = scan_head(&mut f, &mut p);
+    if size > head {
+        let start = size.saturating_sub(TAIL_BYTES).max(head);
         // The first line of the tail chunk is usually cut mid-way; serde skips it.
-        scan_lines(&read_range(&mut f, start, size - start), &mut p, true);
+        for line in read_range(&mut f, start, size - start).lines() {
+            scan_line(line, &mut p, true);
+        }
     }
     let title = p.custom_title.or(p.first_prompt)?;
     Some(Conversation { session_id, cwd: p.cwd?, title, git_branch: p.branch, last_activity: mtime })
@@ -357,9 +399,23 @@ mod tests {
     fn unwraps_prompts_sent_through_pairwave() {
         let dir = std::env::temp_dir().join(format!("relay-conv-{}-d", std::process::id()));
         let p = write(&dir, &format!("{ID}.jsonl"), &[
-            r#"{"type":"user","cwd":"/w","message":{"role":"user","content":"<channel source=\"clawborrator\" chat_id=\"x\" sender=\"remote\">\nDoes anything need to be done before the next meeting?\n</channel>"}}"#,
+            r#"{"type":"user","isMeta":true,"cwd":"/w","message":{"role":"user","content":"<channel source=\"clawborrator\" chat_id=\"x\" sender=\"remote\">\nDoes anything need to be done before the next meeting?\n</channel>"}}"#,
         ]);
         assert_eq!(parse_transcript(&p, 10, 1).unwrap().title, "Does anything need to be done before the next meeting?");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_the_prompt_after_a_huge_first_line() {
+        let dir = std::env::temp_dir().join(format!("relay-conv-{}-e", std::process::id()));
+        let big = format!(r#"{{"type":"attachment","data":"{}"}}"#, "x".repeat(700_000));
+        let p = write(&dir, &format!("{ID}.jsonl"), &[
+            &big,
+            r#"{"type":"user","cwd":"/w/big","message":{"role":"user","content":"After the attachment"}}"#,
+        ]);
+        let size = std::fs::metadata(&p).unwrap().len();
+        let c = parse_transcript(&p, size, 1).unwrap();
+        assert_eq!((c.cwd.as_str(), c.title.as_str()), ("/w/big", "After the attachment"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
