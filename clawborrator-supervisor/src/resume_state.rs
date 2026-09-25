@@ -23,10 +23,15 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 const MAX_ENTRIES: usize = 300;
+/// Recent Claude Code ids kept per session, newest first. A respawn uses the
+/// newest one that has a transcript, so an incarnation that died before
+/// Claude wrote anything doesn't hide the conversation before it.
+const MAX_IDS: usize = 5;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct Entry {
-    cc: String,
+    #[serde(default)]
+    ids: Vec<String>,
     at: String,
 }
 
@@ -48,7 +53,11 @@ pub fn record(hub_sid: &str, cc_sid: &str) {
     let _g = LOCK.lock().unwrap();
     let Some(path) = state_path() else { return };
     let mut map = load();
-    map.insert(hub_sid.to_string(), Entry { cc: cc_sid.to_string(), at: chrono::Utc::now().to_rfc3339() });
+    let e = map.entry(hub_sid.to_string()).or_default();
+    e.ids.retain(|x| x != cc_sid);
+    e.ids.insert(0, cc_sid.to_string());
+    e.ids.truncate(MAX_IDS);
+    e.at = chrono::Utc::now().to_rfc3339();
     if map.len() > MAX_ENTRIES {
         let mut by_age: Vec<(String, String)> = map.iter().map(|(k, v)| (v.at.clone(), k.clone())).collect();
         by_age.sort();
@@ -100,14 +109,12 @@ pub fn with_resume(flags: &[String], cc_sid: &str) -> Vec<String> {
 /// conversation when there's a transcript for it, else `flags` unchanged.
 pub fn respawn_flags(hub_sid: &str, flags: &[String]) -> Vec<String> {
     let Some(entry) = load().get(hub_sid).cloned() else { return flags.to_vec() };
-    let has_transcript = crate::statusline::claude_config_dir()
-        .and_then(|root| crate::conversations::find_transcript(&root, &entry.cc))
-        .is_some();
-    if !has_transcript {
+    let Some(root) = crate::statusline::claude_config_dir() else { return flags.to_vec() };
+    let Some(cc) = entry.ids.iter().find(|id| crate::conversations::find_transcript(&root, id).is_some()) else {
         return flags.to_vec();
-    }
-    info!(session_id = hub_sid, cc_session_id = %entry.cc, "respawn: resuming the previous conversation");
-    with_resume(flags, &entry.cc)
+    };
+    info!(session_id = hub_sid, cc_session_id = %cc, "respawn: resuming the previous conversation");
+    with_resume(flags, cc)
 }
 
 /// Tell the hub not to bring this session back on the next restart

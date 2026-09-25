@@ -967,6 +967,7 @@ pub async fn soft_restart_session(
         s.extra_flags         = extra_flags.to_vec();
         s.auto_enter          = auto_enter;
         s.watcher             = new_watcher;
+        crate::resume_state::record(session_id, &cc_session_id);
         s.cc_session_id       = cc_session_id;
         s.token_usage_sampler = new_sampler;
     }
