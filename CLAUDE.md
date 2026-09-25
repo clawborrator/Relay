@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-**Relay** (`shadows-desktop` crate, v0.4.1) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
+**Relay** (`shadows-desktop` crate, v0.4.2) — A desktop daemon that registers a machine with a [clawborrator](https://github.com/clawborrator) hub and runs Claude Code sessions on it, controlled from the [shadows](https://github.com/clawborrator/shadows) web app. The distributed binary is named `relay` (`relay.exe` on Windows); the crate package stays `shadows-desktop` to keep the fork diff small.
 
 Fork of `desktop_v1` (`clawborrator-supervisor`). The only behavioral difference is authentication: instead of pairing against the hub's GitHub OAuth, it pairs against the **shadows app** (Google/Zoho SSO). Shadows brokers a hub token for the user's shadow principal. Everything downstream (the `/supervisor` WebSocket, session spawn/kill/restart, channel-token plumbing) is unchanged from desktop_v1.
 
@@ -59,7 +59,7 @@ Cargo 1.75+ required (workspace pins `rust-version = "1.75"`).
 | `status.rs` | `TrayStatus` / `TrayStatusUpdater` |
 | `token_usage.rs` | Claude token tracking |
 | `statusline.rs` | Real plan usage. Every session is spawned with `--settings <scratch>/relay-settings.json` whose `statusLine.command` is `relay statusline --out <scratch>/statusline.json` (hidden subcommand). It saves Claude Code's status JSON (model, context window, `rate_limits.five_hour/seven_day` with `resets_at`), then prints the user's own statusLine if they have one (passthrough through `sh -c`, or Git Bash on Windows like Claude Code does; one 3s deadline for the whole process, killed as a process group/tree on timeout) or a compact default. The snapshot is deleted on every spawn so a soft restart can't report the previous run. The daemon's reporter POSTs changes (and a 5-min heartbeat) for sessions whose process is still alive to `<shadows_url>/api/relay/usage`, re-reading the token + URL from the config each time so a re-pair needs no restart. Only usage fields leave the machine: no paths, transcript or workspace info. Skipped when the operator passes their own `--settings`. |
-| `conversations.rs` | Resumable conversations. Every ~2 min it lists Claude Code transcripts under `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/*/*.jsonl` touched in the last 30 days (newest 200, excluding sessions this daemon is running) and POSTs `{sessionId, cwd, title, gitBranch, lastActivity}` to `<shadows_url>/api/relay/conversations` when the list changes (15-min heartbeat). Title = Claude Code's latest `custom-title`, else the first typed prompt (120 chars). Only the head and tail 256 KB of each file are read, cached by size+mtime. No message bodies, tool output or file contents leave the machine. Opt out with `RELAY_NO_CONVERSATION_LIST=1`. PairWave resumes one by spawning with `flags: ["--resume", <id>]`; `spawn_cc` adds `--fork-session`. |
+| `conversations.rs` | Resumable conversations. Every ~2 min it lists Claude Code transcripts under `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/*/*.jsonl` touched in the last 30 days (newest 200, excluding sessions this daemon is running) and POSTs `{sessionId, cwd, title, gitBranch, lastActivity}` to `<shadows_url>/api/relay/conversations` when the list changes (15-min heartbeat). Title = Claude Code's latest `custom-title`, else the first typed prompt (120 chars). Only the head and tail 256 KB of each file are read, cached by size+mtime. No message bodies, tool output or file contents leave the machine. Opt out with `RELAY_NO_CONVERSATION_LIST=1`. PairWave resumes one by spawning with `flags: ["--resume", <id>]`; `spawn_cc` adds `--fork-session`. After such a spawn, `dispatch_session_create` calls `upload_history`, which POSTs the source conversation's typed prompts, Claude's text replies and tool calls (name + input, 8 KB cap; no tool results, attachments or sidechains; last 400 items) to `<shadows_url>/api/relay/history`, retrying 404s while PairWave creates the session row. The usage report also carries each session's Claude Code `ccSessionId` (from the status-line JSON) so PairWave can resume an inactive session in place. |
 
 ### Config file
 
@@ -106,7 +106,7 @@ Upstream WS/session fixes can be pulled from desktop_v1 with minimal conflict si
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `DAEMON_VERSION` | from Cargo.toml (currently `0.4.1`) | Sent in the `hello` WS frame |
+| `DAEMON_VERSION` | from Cargo.toml (currently `0.4.2`) | Sent in the `hello` WS frame |
 | `DEFAULT_SHADOWS_URL` | `https://shadows-app.fly.dev` | Default pairing target |
 | `PING_INTERVAL` | 30s | WS keepalive |
 | `LIVENESS_TIMEOUT` | 90s | No-frame deadline before forced reconnect |
