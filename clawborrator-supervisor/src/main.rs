@@ -37,6 +37,7 @@ mod spawn;
 mod status;
 mod statusline;
 mod token_usage;
+mod resume_state;
 mod update;
 mod worktree;
 #[cfg(any(target_os = "windows", target_os = "macos"))] mod tray;
@@ -1205,6 +1206,7 @@ pub(crate) async fn run_daemon(
         let ipc_cfg = Arc::new(ipc::IpcConfig {
             hub_url:    hub.clone(),
             pat:        token.clone(),
+            pat_override: cli.pat.clone(),
             machine_id: cfg.machine_id.clone(),
         });
         tokio::spawn(async move {

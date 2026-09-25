@@ -813,7 +813,9 @@ pub async fn respawn_preserving_id_session(
 
     let (scratch_dir, mcp_path) = prepare_mcp_config(hub_url, &rotated.channel_token).await?;
     let cc_session_id = uuid::Uuid::new_v4().to_string();
-    let (master, child) = spawn_cc(&folder, &mcp_path, &cc_session_id, extra_flags)
+    // Pick the conversation back up where it was when Relay went down.
+    let spawn_flags = crate::resume_state::respawn_flags(session_id, extra_flags);
+    let (master, child) = spawn_cc(&folder, &mcp_path, &cc_session_id, &spawn_flags)
         .with_context(|| "spawning claude (respawn-preserving-id)")?;
     let (parser, writer, output_tx) = wire_pty_io(&*master)?;
     let watcher = if auto_enter {
@@ -965,6 +967,7 @@ pub async fn soft_restart_session(
         s.extra_flags         = extra_flags.to_vec();
         s.auto_enter          = auto_enter;
         s.watcher             = new_watcher;
+        crate::resume_state::record(session_id, &cc_session_id);
         s.cc_session_id       = cc_session_id;
         s.token_usage_sampler = new_sampler;
     }

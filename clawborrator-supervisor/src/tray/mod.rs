@@ -283,6 +283,7 @@ fn drain_menu_events(
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     mgr:         Arc<SessionManager>,
     update:      Updater,
+    pat_override: Option<String>,
 ) {
     for ev in MenuEvent::receiver() {
         match classify(&ev) {
@@ -305,7 +306,11 @@ fn drain_menu_events(
             },
             MenuAction::Attach(sid) => open_attach_terminal(&sid),
             MenuAction::End(sid) => match crate::spawn::kill_session(&mgr, &sid) {
-                Ok(())  => info!(session_id = %sid, "ended session from tray"),
+                Ok(())  => {
+                    info!(session_id = %sid, "ended session from tray");
+                    // Ended on purpose: don't bring it back on the next restart.
+                    crate::resume_state::stop_auto_restart_in_background(hub_url.clone(), pat_override.clone(), None, sid.clone());
+                }
                 Err(e)  => warn!(error = %e, session_id = %sid, "tray End failed"),
             },
             MenuAction::Quit => {
