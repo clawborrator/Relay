@@ -115,6 +115,8 @@ fn ipc_name() -> Result<Name<'static>> {
 pub struct IpcConfig {
     pub hub_url:    String,
     pub pat:        String,
+    /// `--pat` / `CLAWBORRATOR_PAT`, when the daemon was started with one.
+    pub pat_override: Option<String>,
     pub machine_id: String,
 }
 
@@ -189,7 +191,9 @@ async fn handle_conn(conn: Stream, mgr: Arc<SessionManager>, cfg: Arc<IpcConfig>
             let resp = match kill_session(&mgr, &id) {
                 Ok(())  => {
                     // Ended on purpose: don't bring it back on the next restart.
-                    crate::resume_state::stop_auto_restart_in_background(cfg.hub_url.clone(), cfg.pat.clone(), id.clone());
+                    crate::resume_state::stop_auto_restart_in_background(
+                        cfg.hub_url.clone(), cfg.pat_override.clone(), Some(cfg.pat.clone()), id.clone(),
+                    );
                     Response::Ok
                 }
                 Err(e)  => Response::Error { message: e.to_string() },

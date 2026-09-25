@@ -48,6 +48,7 @@ pub fn run_with_tray(cli: Cli, log_path: PathBuf) -> Result<()> {
     let (status_updater, status_rx) = TrayStatusUpdater::channel();
     let cfg_for_dash = crate::load_or_init_config().context("loading config for tray dashboard URL")?;
     let hub_url = crate::effective_hub_url(&cli, &cfg_for_dash);
+    let pat_override = cli.pat.clone();
 
     // Capture the main thread id BEFORE spawning workers so the daemon
     // thread can post WM_QUIT here when it exits.
@@ -92,7 +93,8 @@ pub fn run_with_tray(cli: Cli, log_path: PathBuf) -> Result<()> {
         let log_path = log_path.clone();
         let mgr = mgr.clone();
         let updater = updater.clone();
-        move || drain_menu_events(hub_url, log_path, shutdown_tx, mgr, updater)
+        let pat_override = pat_override.clone();
+        move || drain_menu_events(hub_url, log_path, shutdown_tx, mgr, updater, pat_override)
     });
 
     let menu_state = MenuState::new(tray, mgr, updater);

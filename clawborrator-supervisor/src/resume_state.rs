@@ -119,7 +119,18 @@ pub fn respawn_flags(hub_sid: &str, flags: &[String]) -> Vec<String> {
 
 /// Tell the hub not to bring this session back on the next restart
 /// (it was ended on purpose). Best effort, off the caller's thread.
-pub fn stop_auto_restart_in_background(hub_url: String, token: String, hub_sid: String) {
+///
+/// Credentials, in the daemon's own order: an explicit `--pat` /
+/// `CLAWBORRATOR_PAT` override, else the pairing token read fresh from the
+/// config (a re-pair swaps it without a restart), else `fallback`.
+pub fn stop_auto_restart_in_background(hub_url: String, pat_override: Option<String>, fallback: Option<String>, hub_sid: String) {
+    let token = pat_override
+        .or_else(|| crate::load_or_init_config().ok().and_then(|c| c.token))
+        .or(fallback);
+    let Some(token) = token else {
+        warn!(session_id = %hub_sid, "no token to turn off auto-restart with");
+        return;
+    };
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
         rt.block_on(async move {

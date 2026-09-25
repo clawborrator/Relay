@@ -1206,6 +1206,7 @@ pub(crate) async fn run_daemon(
         let ipc_cfg = Arc::new(ipc::IpcConfig {
             hub_url:    hub.clone(),
             pat:        token.clone(),
+            pat_override: cli.pat.clone(),
             machine_id: cfg.machine_id.clone(),
         });
         tokio::spawn(async move {
