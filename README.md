@@ -100,7 +100,8 @@ either before or after the subcommand.
 Relay 0.4.5+ checks the latest GitHub release at start and every 6 hours.
 When a newer one exists, the menu-bar / tray menu shows **"Update to Relay
 x.y.z"** (with "(ends N sessions)" while sessions are running); otherwise
-**"Check for updates"**. Choosing it downloads this platform's release asset
+**"Check for updates"**. From 0.4.7, the first time a new version is seen
+Relay also shows a desktop notification (macOS / Windows). Choosing it downloads this platform's release asset
 and installs it in place, then restarts Relay through whatever started it:
 
 - **macOS**: swaps `Relay.app` for the one in the .dmg, then
