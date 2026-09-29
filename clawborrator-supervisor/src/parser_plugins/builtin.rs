@@ -30,6 +30,7 @@ pub fn default_plugins() -> Vec<Box<dyn ParserPlugin>> {
         Box::new(McpServer),
         Box::new(BypassPermissions),
         Box::new(EnableAutoMode),
+        Box::new(SettingsError),
     ]
 }
 
@@ -198,5 +199,38 @@ impl ParserPlugin for BypassPermissions {
                 (150, b"\r".to_vec()),       // Enter, after Ink re-renders
             ]))
         } else { None }
+    }
+}
+
+/// "Settings Error": CC found a settings file it can't parse (e.g. a
+/// `.claude/settings.local.json` with two JSON objects back to back)
+/// and blocks startup, before MCP servers load, until someone picks:
+///   1. Fix with Claude   2. Exit and fix manually
+///   3. Continue without these settings
+/// Nobody is at a managed session's TUI, so without this the session
+/// never connects its channel. We pick "Continue without these
+/// settings": CC skips the broken files entirely, which only drops the
+/// operator's allow-rules/env from them (less permissive, never more),
+/// and the session starts. Option 1 would start a Claude turn editing
+/// the operator's files unasked; option 2 exits.
+///
+/// The target's option number is read off the screen rather than
+/// hard-coded, and we press ↓ exactly (target − highlighted) times, so
+/// a reordered menu can't land us on "Exit". Same SS3 B + per-key delay
+/// as `BypassPermissions`, for the same Ink reasons.
+pub struct SettingsError;
+impl ParserPlugin for SettingsError {
+    fn name(&self) -> &'static str { "settings-error" }
+    fn inspect(&self, screen: &ScreenView) -> Option<Action> {
+        if !screen.contains("Settings Error") { return None; }
+        if !screen.contains("Continue without these settings") { return None; }
+        let (_, current) = screen.highlighted_option()?;
+        let target = screen.option_number("Continue without these settings")?;
+        if current > target { return None; }
+        let mut chunks: Vec<(u64, Vec<u8>)> = (current..target)
+            .map(|n| (if n == current { 0 } else { 150 }, b"\x1bOB".to_vec()))
+            .collect();
+        chunks.push((if chunks.is_empty() { 0 } else { 150 }, b"\r".to_vec()));
+        Some(Action::WriteSequence(chunks))
     }
 }

@@ -133,7 +133,23 @@ Which type of beverage do you prefer?
 
 Enter to select · ↑/↓ to navigate · Esc to cancel";
 
-const UNRELATED: &str = "claude > some unrelated screen content without prompts";
+// Captured 2026-09-29 from `claude --resume` (CC 2.1.284) in a folder
+// whose `.claude/settings.local.json` held two JSON objects back to
+// back. CC parks here before loading MCP servers.
+const SETTINGS_ERROR: &str = " Settings Error
+
+ /Users/x/proj/.claude/settings.local.json
+  └ Expected object, but received undefined
+
+ Files with errors are skipped entirely, not just the invalid settings.
+
+ ❯ 1. Fix with Claude
+   2. Exit and fix manually
+   3. Continue without these settings
+
+ Enter to confirm · Esc to cancel";
+
+const UNRELATED: &str ="claude > some unrelated screen content without prompts";
 
 // === Helpers ===
 
@@ -265,6 +281,51 @@ fn assert_no_match(plugin: &dyn ParserPlugin, text: &str) {
     assert_no_match(&ResumeSummary, &text);
 }
 
+// === SettingsError ===
+
+fn sequence(plugin: &dyn ParserPlugin, text: &str) -> Vec<(u64, Vec<u8>)> {
+    match plugin.inspect(&screen(text)) {
+        Some(Action::WriteSequence(chunks)) => chunks,
+        other => panic!("{} did not return a sequence; got {:?}", plugin.name(), other),
+    }
+}
+
+#[test] fn settings_error_moves_down_twice_then_enters() {
+    let chunks = sequence(&SettingsError, SETTINGS_ERROR);
+    let bytes: Vec<&[u8]> = chunks.iter().map(|(_, b)| b.as_slice()).collect();
+    assert_eq!(bytes, vec![&b"\x1bOB"[..], &b"\x1bOB"[..], &b"\r"[..]]);
+    assert_eq!(chunks[0].0, 0);
+    assert!(chunks[1..].iter().all(|(d, _)| *d > 0), "later keys need a delay so Ink re-renders");
+}
+#[test] fn settings_error_just_enters_when_already_on_continue() {
+    let text = SETTINGS_ERROR.replace("❯ 1. Fix with Claude", "  1. Fix with Claude")
+                             .replace("  3. Continue without", "❯ 3. Continue without");
+    let chunks = sequence(&SettingsError, &text);
+    assert_eq!(chunks, vec![(0, b"\r".to_vec())]);
+}
+#[test] fn settings_error_follows_option_number_not_position() {
+    // If CC reorders the menu, count to wherever "Continue" now is.
+    let text = SETTINGS_ERROR.replace("3. Continue without these settings", "2. Continue without these settings")
+                             .replace("2. Exit and fix manually", "3. Exit and fix manually");
+    assert_eq!(sequence(&SettingsError, &text).len(), 2);
+}
+#[test] fn settings_error_skips_when_cursor_past_target() {
+    let text = SETTINGS_ERROR.replace("❯ 1. Fix with Claude", "  1. Fix with Claude")
+                             .replace("3. Continue without these settings", "2. Continue without these settings")
+                             .replace("   2. Exit and fix manually", " ❯ 3. Exit and fix manually");
+    assert_no_match(&SettingsError, &text);
+}
+#[test] fn settings_error_ignores_trust() { assert_no_match(&SettingsError, TRUST_FOLDER); }
+#[test] fn settings_error_ignores_mcp() { assert_no_match(&SettingsError, MCP_SERVER); }
+#[test] fn settings_error_ignores_unrelated() { assert_no_match(&SettingsError, UNRELATED); }
+
+#[test] fn option_number_finds_label_with_and_without_marker() {
+    let s = screen(SETTINGS_ERROR);
+    assert_eq!(s.option_number("Fix with Claude"), Some(1));
+    assert_eq!(s.option_number("Continue without these settings"), Some(3));
+    assert_eq!(s.option_number("Files with errors"), None);
+}
+
 // === Cross-plugin isolation: only the right plugin fires per fixture ===
 
 #[test] fn each_fixture_matches_exactly_one_plugin() {
@@ -278,6 +339,7 @@ fn assert_no_match(plugin: &dyn ParserPlugin, text: &str) {
         ("no-continue",        NO_CONTINUE),
         ("resume-picker",      RESUME_PICKER),
         ("resume-summary",     RESUME_SUMMARY),
+        ("settings-error",     SETTINGS_ERROR),
     ];
     for (expected, text) in cases {
         let s = screen(text);
