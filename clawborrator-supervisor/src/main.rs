@@ -651,6 +651,13 @@ async fn dispatch_session_create(ctx: &DaemonCtx, args: serde_json::Value) -> st
         auto_enter,
     };
     let resumed_from = conversations::resume_source(&extra_flags);
+    // Resuming in a folder other than the conversation's own (a new
+    // worktree): Claude Code only finds transcripts of the folder it runs in.
+    if let (Some(id), Some(root)) = (&resumed_from, statusline::claude_config_dir()) {
+        if let Some(copy) = conversations::bring_transcript(&root, id, &create_args.folder) {
+            info!(conversation = %id, copy = %copy.display(), "copied the conversation's transcript for a resume in another folder");
+        }
+    }
     match create_session(&ctx.mgr, create_args).await {
         Ok(session_id) => {
             // Resumed from an earlier conversation: send its history to the

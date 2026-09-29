@@ -68,14 +68,26 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The main checkout of the repo `top` belongs to. For a worktree that's the
+/// repo it was added to, so new worktrees sit next to it instead of nesting.
+fn main_checkout(top: &Path) -> PathBuf {
+    git(top, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .ok()
+        .map(PathBuf::from)
+        .filter(|d| d.file_name().is_some_and(|n| n == ".git"))
+        .and_then(|d| d.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| top.to_path_buf())
+}
+
 /// Create (or reuse) `<repo>/.claude/worktrees/<name>` for the repo that
-/// contains `folder`, and return its path.
+/// contains `folder`, and return its path. The branch starts from `folder`'s
+/// current commit, so a session resumed out of a busy worktree keeps its work.
 pub fn ensure_worktree(folder: &Path, name: &str) -> Result<PathBuf> {
     let top = PathBuf::from(
         git(folder, &["rev-parse", "--show-toplevel"])
             .with_context(|| format!("{} isn't inside a git repository, so it can't have a worktree", folder.display()))?,
     );
-    let root = top.join(".claude").join("worktrees");
+    let root = main_checkout(&top).join(".claude").join("worktrees");
     let path = root.join(name);
     if path.join(".git").exists() {
         return Ok(path); // already there (e.g. a restart) — reuse it
@@ -149,6 +161,23 @@ mod tests {
         assert_eq!(ensure_worktree(&dir, "pw-test").unwrap(), p);
         let status = git(&dir, &["status", "--porcelain"]).unwrap();
         assert!(status.is_empty(), "worktrees should be ignored, got: {status}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_worktree_of_a_worktree_sits_in_the_main_checkout_on_its_commit() {
+        let dir = std::env::temp_dir().join(format!("relay-wt2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |at: &Path, a: &[&str]| assert!(Command::new("git").arg("-C").arg(at).args(a).output().unwrap().status.success());
+        run(&dir, &["init", "-q"]);
+        run(&dir, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let first = ensure_worktree(&dir, "pw-one").unwrap();
+        run(&first, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "work"]);
+        let second = ensure_worktree(&first, "pw-two").unwrap();
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(canon(&second), canon(&dir).join(".claude/worktrees/pw-two"));
+        assert_eq!(git(&second, &["rev-parse", "HEAD"]).unwrap(), git(&first, &["rev-parse", "HEAD"]).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
