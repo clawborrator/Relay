@@ -65,6 +65,19 @@ impl ScreenView {
         None
     }
 
+    /// Option number of the first numbered line (`N. label`, with or
+    /// without a cursor marker) whose text contains `label`. Lets a
+    /// plugin target an option by its label instead of assuming its
+    /// position in the menu.
+    pub fn option_number(&self, label: &str) -> Option<u32> {
+        self.lines.iter().filter(|l| l.contains(label)).find_map(|line| {
+            let t = line.trim_start();
+            let t = strip_cursor_marker(t).unwrap_or(t).trim_start();
+            let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if t[digits.len()..].starts_with('.') { digits.parse().ok() } else { None }
+        })
+    }
+
     /// True if any line on the screen has a cursor-marker prefix
     /// (`>` or `❯`) followed by content. Used by plugins where the
     /// highlighted item isn't a numbered option (e.g. the

@@ -104,7 +104,12 @@ pub fn spawn_watcher(
             if snapshot.text == last_text {
                 if !snapshot.text.trim().is_empty() {
                     stable_ticks = stable_ticks.saturating_add(1);
-                    if !stuck_logged && fired.is_empty()
+                    // Also dump when an earlier plugin already fired but
+                    // CC is now parked on another confirm-style prompt
+                    // (dev-channels dismissed, then a prompt nobody
+                    // recognised: previously nothing was logged).
+                    let looks_like_prompt = snapshot.contains("Enter to confirm");
+                    if !stuck_logged && (fired.is_empty() || looks_like_prompt)
                         && stable_ticks == STUCK_LOG_AFTER_TICKS {
                         warn!(session_id = %sid_for_task,
                               ticks = stable_ticks,
