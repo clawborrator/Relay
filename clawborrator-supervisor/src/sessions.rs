@@ -252,6 +252,20 @@ impl SessionManager {
         out
     }
 
+    /// True when any running session is mid-reply (Claude Code shows "esc to
+    /// interrupt" while it works). A remote update waits for this to clear.
+    pub fn any_busy(&self) -> bool {
+        let map = self.inner.lock().unwrap();
+        map.values().any(|entry| {
+            let Ok(mut s) = entry.lock() else { return false };
+            if !matches!(s.child.try_wait(), Ok(None)) {
+                return false;
+            }
+            let Ok(p) = s.parser.lock() else { return false };
+            screen_is_busy(&p.screen().contents())
+        })
+    }
+
     pub fn list_session_scratch_dirs(&self) -> Vec<(String, std::path::PathBuf)> {
         let map = self.inner.lock().unwrap();
         let mut out = Vec::with_capacity(map.len());
@@ -264,6 +278,11 @@ impl SessionManager {
         }
         out
     }
+}
+
+/// Claude Code's working indicator ("✻ Thinking… (12s · esc to interrupt)").
+pub fn screen_is_busy(screen: &str) -> bool {
+    screen.to_ascii_lowercase().contains("esc to interrupt")
 }
 
 pub fn fresh_pty_size() -> PtySize {
