@@ -242,6 +242,9 @@ impl Scanner {
     pub fn scan(&mut self, root: &Path, exclude: &HashSet<String>, now: SystemTime) -> Vec<Conversation> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
+        // A conversation resumed in another folder has a copy there
+        // (bring_transcript): list it once, newest copy first.
+        let mut ids = HashSet::new();
         for (path, size, mtime) in recent_transcripts(root, now) {
             if out.len() >= MAX_CONVERSATIONS {
                 break;
@@ -256,7 +259,7 @@ impl Scanner {
                 }
             };
             if let Some(c) = conv {
-                if !exclude.contains(&c.session_id) {
+                if !exclude.contains(&c.session_id) && ids.insert(c.session_id.clone()) {
                     out.push(c);
                 }
             }
@@ -383,6 +386,35 @@ pub fn resume_source(flags: &[String]) -> Option<String> {
 pub(crate) fn find_transcript(root: &Path, id: &str) -> Option<PathBuf> {
     let name = format!("{id}.jsonl");
     std::fs::read_dir(root.join("projects")).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.is_file())
+}
+
+/// Claude Code's per-folder transcript dir name: every character that isn't
+/// an ASCII letter or digit becomes `-` (`/w/app.x` → `-w-app-x`).
+pub(crate) fn project_dir_name(folder: &Path) -> Option<String> {
+    let s = folder.to_str()?;
+    // Claude Code hashes very long paths; don't guess at that.
+    if s.len() > 200 {
+        return None;
+    }
+    Some(s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect())
+}
+
+/// Make conversation `id` resumable from `folder`. Claude Code looks for
+/// `--resume <id>` among the transcripts of the folder it runs in, so a
+/// conversation resumed in a different folder (a fresh worktree, because its
+/// own folder already has a session) isn't found. Copy the transcript into
+/// that folder's transcript dir. The resume forks (spawn.rs), so neither copy
+/// is written to again. Returns the copy's path when one was made.
+pub(crate) fn bring_transcript(root: &Path, id: &str, folder: &Path) -> Option<PathBuf> {
+    let src = find_transcript(root, id)?;
+    let dir = root.join("projects").join(project_dir_name(folder)?);
+    let dst = dir.join(format!("{id}.jsonl"));
+    if dst.is_file() {
+        return None;
+    }
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::copy(&src, &dst).ok()?;
+    Some(dst)
 }
 
 /// The visible conversation: typed prompts, Claude's replies and tool calls
@@ -630,6 +662,29 @@ mod tests {
     fn long_titles_are_truncated() {
         let t = one_line(&"word ".repeat(100));
         assert!(t.chars().count() <= TITLE_MAX && t.ends_with('…'));
+    }
+
+    #[test]
+    fn project_dir_names_match_claude_code() {
+        assert_eq!(project_dir_name(Path::new("/Users/me/app/.claude/worktrees/pw-a1")).as_deref(), Some("-Users-me-app--claude-worktrees-pw-a1"));
+        assert!(project_dir_name(Path::new(&"/x".repeat(150))).is_none());
+    }
+
+    #[test]
+    fn brings_a_transcript_to_another_folder_and_lists_it_once() {
+        let root = std::env::temp_dir().join(format!("relay-conv-{}-bring", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root.join("projects").join("-w-app"), &format!("{ID}.jsonl"), &[
+            r#"{"type":"user","cwd":"/w/app","message":{"role":"user","content":"fix the build"}}"#,
+        ]);
+        let wt = Path::new("/w/app/.claude/worktrees/pw-x");
+        let copy = bring_transcript(&root, ID, wt).expect("copied");
+        assert_eq!(copy, root.join("projects").join("-w-app--claude-worktrees-pw-x").join(format!("{ID}.jsonl")));
+        assert!(bring_transcript(&root, ID, wt).is_none(), "already there");
+        assert!(bring_transcript(&root, "00000000-0000-4000-8000-000000000000", wt).is_none());
+        let v = Scanner::default().scan(&root, &Default::default(), SystemTime::now());
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].cwd, "/w/app");
     }
 }
 
