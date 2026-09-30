@@ -45,6 +45,11 @@ struct Poll<'a> {
 #[derive(Deserialize, Debug)]
 pub struct Job {
     pub id: String,
+    /// "" / "prompt": run the prompt. "auth-check": test Claude Code's
+    /// sign-in (claude_auth.rs). "login-start" / "login-code" /
+    /// "login-cancel": sign Claude Code in again (claude_login.rs).
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub system: String,
     pub prompt: String,
@@ -111,7 +116,37 @@ pub fn parse_output(stdout: &str, stderr: &str, exited_ok: bool) -> Result<Strin
     }
 }
 
-async fn run_job(job: &Job) -> Result<String, String> {
+/// Handle one job from the shadows app.
+async fn handle(job: &Job) -> Result<String, String> {
+    match job.kind.as_str() {
+        "" | "prompt" => {
+            let res = run_job(job).await;
+            match &res {
+                Ok(_) => crate::claude_auth::record(true, None),
+                Err(e) if crate::claude_auth::is_auth_error(e) => crate::claude_auth::record(false, Some(e.clone())),
+                Err(_) => {}
+            }
+            res
+        }
+        "auth-check" => {
+            let s = crate::claude_auth::check_now().await;
+            serde_json::to_string(&s).map_err(|e| e.to_string())
+        }
+        "login-start" => crate::claude_login::start().await,
+        "login-code" => {
+            crate::claude_login::finish(&job.prompt).await?;
+            let s = crate::claude_auth::check_now().await;
+            if s.ok { Ok("signed in".into()) } else { Err(s.error.unwrap_or_else(|| "Claude Code still isn't signed in".into())) }
+        }
+        "login-cancel" => {
+            crate::claude_login::cancel();
+            Ok("cancelled".into())
+        }
+        other => Err(format!("this Relay doesn't know the job kind {other:?}; update Relay")),
+    }
+}
+
+pub async fn run_job(job: &Job) -> Result<String, String> {
     if job.prompt.len() > MAX_PROMPT || job.system.len() > MAX_SYSTEM {
         return Err("job too large".into());
     }
@@ -207,7 +242,7 @@ pub fn spawn_ai_jobs(cfg: ReporterConfig) {
             };
             let Some(job) = job else { continue };
             info!(id = %job.id, "running an AI job for the shadows app");
-            let res = run_job(&job).await;
+            let res = handle(&job).await;
             if let Err(e) = &res {
                 warn!(id = %job.id, error = %e, "AI job failed");
             }
@@ -255,6 +290,7 @@ mod live {
     async fn runs_claude_code_without_tools() {
         let job = Job {
             id: "t".into(),
+            kind: String::new(),
             system: "Reply with a single JSON object and nothing else.".into(),
             prompt: "Return {\"sum\": 2+2 as a number, \"tools\": the names of any tools you can call, as an array}.".into(),
             model: "sonnet".into(),

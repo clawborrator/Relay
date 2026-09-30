@@ -137,6 +137,15 @@ installing the new build over the old one.
   each job as `claude -p` with no tools, no MCP servers and no project
   settings, in an empty temp folder, then posts the text to
   `/api/relay/ai-jobs/result`. `RELAY_NO_AI_JOBS=1` turns this off.
+- **Claude Code sign-in** (0.4.12+): `claude auth status` reports "logged
+  in" even when the token has expired, so Relay sends Claude Code a tiny
+  request (Haiku) 2 minutes after start and every 6 hours (every 15 minutes
+  while signed out, and early when a session screen shows a sign-in error)
+  and reports the result in its check-in, so the shadows app can warn you.
+  From the Machines page you can also sign it in again: Relay runs
+  `claude auth login` with the browser disabled, the app shows the link, and
+  the code you paste there is typed into the waiting login.
+  `RELAY_NO_AUTH_CHECK=1` turns off the periodic request.
 - **One session per folder**: a second managed session in a busy folder is
   refused. Spawning with `--worktree <name>` (0.4.4+) creates or reuses
   `<repo>/.claude/worktrees/<name>` on branch `worktree-<name>` and runs the

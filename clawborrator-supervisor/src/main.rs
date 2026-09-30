@@ -38,6 +38,8 @@ mod status;
 mod statusline;
 mod token_usage;
 mod ai_jobs;
+mod claude_auth;
+mod claude_login;
 mod remote_update;
 mod resume_state;
 mod update;
@@ -1251,6 +1253,9 @@ pub(crate) async fn run_daemon(
         machine_id:     cfg.machine_id.clone(),
         daemon_version: DAEMON_VERSION,
     });
+
+    // Is Claude Code signed in here? Reported in each check-in.
+    claude_auth::spawn_auth_health(mgr.clone());
 
     // AI jobs PairWave runs on this user's Claude Code (reports, summaries…).
     ai_jobs::spawn_ai_jobs(statusline::ReporterConfig {
