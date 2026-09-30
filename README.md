@@ -127,11 +127,22 @@ installing the new build over the old one.
   outside the app) to `/api/relay/conversations`, so they can be resumed
   from the web app. `RELAY_NO_CONVERSATION_LIST=1` turns this off. When a
   session is spawned with `--resume` (0.4.2+), its earlier prompts, replies
-  and tool calls (no tool output) are uploaded to `/api/relay/history`.
+  and tool calls (no tool output) are uploaded to `/api/relay/history`. If
+  the conversation's own folder is busy with another session, resuming it
+  (0.4.9+) retries in its own worktree instead of failing, carrying the
+  transcript over so Claude Code can find it there.
+- **AI jobs** (0.4.11+): the shadows app's AI features (weekly reports,
+  session summaries, approval second opinions) can run on your own Claude
+  Code instead of an API key. Relay long-polls `/api/relay/ai-jobs` and runs
+  each job as `claude -p` with no tools, no MCP servers and no project
+  settings, in an empty temp folder, then posts the text to
+  `/api/relay/ai-jobs/result`. `RELAY_NO_AI_JOBS=1` turns this off.
 - **One session per folder**: a second managed session in a busy folder is
   refused. Spawning with `--worktree <name>` (0.4.4+) creates or reuses
   `<repo>/.claude/worktrees/<name>` on branch `worktree-<name>` and runs the
-  session there, so several sessions can work on one repo.
+  session there, so several sessions can work on one repo. A worktree made
+  from inside another worktree (0.4.9+) sits next to it in the main
+  checkout instead of nesting, starting from that worktree's own commit.
 - **Open dashboard** (0.4.4+) opens the paired app's dashboard.
 
 ## Re-pairing / recovery
