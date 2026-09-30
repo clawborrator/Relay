@@ -266,6 +266,19 @@ impl SessionManager {
         })
     }
 
+    /// Does any live session's screen satisfy `f`?
+    pub fn any_screen(&self, f: impl Fn(&str) -> bool) -> bool {
+        let map = self.inner.lock().unwrap();
+        map.values().any(|entry| {
+            let Ok(mut s) = entry.lock() else { return false };
+            if !matches!(s.child.try_wait(), Ok(None)) {
+                return false;
+            }
+            let Ok(p) = s.parser.lock() else { return false };
+            f(&p.screen().contents())
+        })
+    }
+
     pub fn list_session_scratch_dirs(&self) -> Vec<(String, std::path::PathBuf)> {
         let map = self.inner.lock().unwrap();
         let mut out = Vec::with_capacity(map.len());

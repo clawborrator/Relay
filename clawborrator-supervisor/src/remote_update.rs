@@ -36,6 +36,9 @@ const UNSUPPORTED_BACKOFF: Duration = Duration::from_secs(30 * 60);
 struct Checkin<'a> {
     machine_id: &'a str,
     daemon_version: &'a str,
+    /// Is Claude Code signed in here (claude_auth.rs)? Absent until checked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claude_auth: Option<crate::claude_auth::AuthState>,
 }
 
 #[derive(Deserialize, Default, Debug, PartialEq)]
@@ -87,7 +90,11 @@ pub fn spawn_update_checkin(mgr: Arc<SessionManager>, cfg: ReporterConfig) {
                 None => None,
                 Some((shadows_url, token)) => {
                     let url = format!("{}/api/relay/checkin", shadows_url.trim_end_matches('/'));
-                    let body = Checkin { machine_id: &cfg.machine_id, daemon_version: cfg.daemon_version };
+                    let body = Checkin {
+                        machine_id: &cfg.machine_id,
+                        daemon_version: cfg.daemon_version,
+                        claude_auth: crate::claude_auth::snapshot(),
+                    };
                     match client.post(&url).bearer_auth(&token).json(&body).send().await {
                         Ok(r) if r.status().is_success() => r.json::<Reply>().await.ok(),
                         Ok(r) if r.status().as_u16() == 404 => {
