@@ -8,7 +8,7 @@ license      = "MIT OR Apache-2.0"
 rust-version = "1.75"
 
 [workspace.dependencies]
-tokio              = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "io-util", "io-std", "net", "sync"] }
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "io-util", "io-std", "net", "sync", "process"] }
 tokio-tungstenite  = { version = "0.24", default-features = false, features = ["rustls-tls-native-roots", "connect"] }
 futures-util       = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde              = { version = "1", features = ["derive"] }

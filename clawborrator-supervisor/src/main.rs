@@ -37,6 +37,7 @@ mod spawn;
 mod status;
 mod statusline;
 mod token_usage;
+mod ai_jobs;
 mod remote_update;
 mod resume_state;
 mod update;
@@ -1243,6 +1244,16 @@ pub(crate) async fn run_daemon(
     // Resumable Claude Code conversations on this machine (incl. ones started
     // outside PairWave), so the shadows app can offer to resume them.
     conversations::spawn_conversation_reporter(mgr.clone(), statusline::ReporterConfig {
+        creds: Arc::new(|| {
+            let c = load_or_init_config().ok()?;
+            Some((c.shadows_url?, c.token?))
+        }),
+        machine_id:     cfg.machine_id.clone(),
+        daemon_version: DAEMON_VERSION,
+    });
+
+    // AI jobs PairWave runs on this user's Claude Code (reports, summaries…).
+    ai_jobs::spawn_ai_jobs(statusline::ReporterConfig {
         creds: Arc::new(|| {
             let c = load_or_init_config().ok()?;
             Some((c.shadows_url?, c.token?))
